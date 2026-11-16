@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Auto-download prebuilt `gd` binary from GitHub Releases on first launch when not found on PATH (zero-step install across Linux, macOS, and Windows, including Remote-SSH)
+
 ## 0.1.1
 
 - Fix Extension Details README images (`media/hero.png`, `media/preview.png`) using Markdown syntax

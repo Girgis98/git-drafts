@@ -44,6 +44,91 @@ type TreeNode =
 const SCHEME = "git-drafts";
 
 let cachedGdBin: { root: string; bin: string } | undefined;
+let extensionStorageDir: string | undefined;
+
+function getManagedGdPath(): string | undefined {
+  if (!extensionStorageDir) {
+    return undefined;
+  }
+  const ext = process.platform === "win32" ? ".exe" : "";
+  return path.join(extensionStorageDir, "bin", `gd${ext}`);
+}
+
+function getReleaseAssetName(): string | undefined {
+  const key = `${process.platform}:${process.arch}`;
+  switch (key) {
+    case "linux:x64":
+      return "git-drafts-x86_64-unknown-linux-musl.tar.gz";
+    case "darwin:arm64":
+      return "git-drafts-aarch64-apple-darwin.tar.gz";
+    case "darwin:x64":
+      return "git-drafts-x86_64-apple-darwin.tar.gz";
+    case "win32:x64":
+      return "git-drafts-x86_64-pc-windows-msvc.zip";
+    default:
+      return undefined;
+  }
+}
+
+async function downloadPrebuiltGd(): Promise<string> {
+  if (!extensionStorageDir) {
+    throw new Error("Extension storage directory unavailable");
+  }
+  const asset = getReleaseAssetName();
+  if (!asset) {
+    throw new Error(
+      `No prebuilt binary for ${process.platform}/${process.arch}; install via cargo`
+    );
+  }
+  const binDir = path.join(extensionStorageDir, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const archivePath = path.join(binDir, asset);
+  const url = `https://github.com/Girgis98/git-drafts/releases/latest/download/${asset}`;
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Git Drafts: Installing gd CLI...",
+      cancellable: false,
+    },
+    async () => {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Download failed (${res.status} ${res.statusText})`);
+      }
+      const bytes = Buffer.from(await res.arrayBuffer());
+      fs.writeFileSync(archivePath, bytes);
+
+      await new Promise<void>((resolve, reject) => {
+        const args = asset.endsWith(".zip")
+          ? ["-xf", archivePath, "-C", binDir]
+          : ["-xzf", archivePath, "-C", binDir];
+        execFile("tar", args, (err, _out, stderr) => {
+          if (err) {
+            reject(new Error((stderr || err.message).trim()));
+          } else {
+            resolve();
+          }
+        });
+      });
+      try {
+        fs.unlinkSync(archivePath);
+      } catch {
+        // ignore cleanup failure
+      }
+      const binPath = getManagedGdPath();
+      if (!binPath || !fs.existsSync(binPath)) {
+        throw new Error("Extracted archive did not contain gd binary");
+      }
+      if (process.platform !== "win32") {
+        fs.chmodSync(binPath, 0o755);
+      }
+    }
+  );
+
+  cachedGdBin = undefined;
+  return getManagedGdPath()!;
+}
 
 function resolveGdExecutable(workspaceRoot: string): string {
   const configured = vscode.workspace
@@ -57,14 +142,15 @@ function resolveGdExecutable(workspaceRoot: string): string {
   }
   const ext = process.platform === "win32" ? ".exe" : "";
   const localRelease = path.join(workspaceRoot, "target", "release", `gd${ext}`);
+  const managed = getManagedGdPath();
+  const cargoBin = path.join(os.homedir(), ".cargo", "bin", `gd${ext}`);
   let resolved = "gd";
   if (fs.existsSync(localRelease)) {
     resolved = localRelease;
-  } else {
-    const cargoBin = path.join(os.homedir(), ".cargo", "bin", `gd${ext}`);
-    if (fs.existsSync(cargoBin)) {
-      resolved = cargoBin;
-    }
+  } else if (managed && fs.existsSync(managed)) {
+    resolved = managed;
+  } else if (fs.existsSync(cargoBin)) {
+    resolved = cargoBin;
   }
   cachedGdBin = { root: workspaceRoot, bin: resolved };
   return resolved;
@@ -391,6 +477,9 @@ class DraftsPipelineViewProvider implements vscode.WebviewViewProvider {
         case "installCli":
           void vscode.commands.executeCommand("gitDrafts.installCli");
           break;
+        case "downloadCli":
+          void vscode.commands.executeCommand("gitDrafts.downloadCli");
+          break;
         case "init":
           void vscode.commands.executeCommand("gitDrafts.init", msg.arg);
           break;
@@ -460,10 +549,10 @@ class DraftsPipelineViewProvider implements vscode.WebviewViewProvider {
       if (missingCli) {
         body = `
           <div class="card">
-            <div class="title">gd CLI Not Found</div>
-            <p class="muted">Install the <code>gd</code> binary first, then click Refresh:</p>
-            <code style="display:block;padding:6px;margin:6px 0;background:rgba(0,0,0,0.2);border-radius:4px;word-break:break-all;">cargo install --git https://github.com/Girgis98/git-drafts.git</code>
-            <button class="btn primary full" onclick="send('installCli')">Install via Cargo in Terminal</button>
+            <div class="title">gd CLI Not Installed</div>
+            <p class="muted">Download the prebuilt binary automatically, or install via Cargo:</p>
+            <button class="btn primary full" onclick="send('downloadCli')">Download Prebuilt gd Binary</button>
+            <button class="btn full" style="margin-top:4px;" onclick="send('installCli')">Install via Cargo in Terminal</button>
             <button class="btn full" style="margin-top:4px;" onclick="send('refresh')">Refresh</button>
           </div>`;
       } else {
@@ -571,6 +660,7 @@ class DraftsController implements vscode.Disposable {
   private metaMap = new WeakMap<vscode.SourceControlResourceState, ResourceMeta>();
   private lastStatus: DraftsJson | undefined;
   private lastRawJson: string | undefined;
+  private autoDownloadAttempted = false;
   private refreshInFlight = false;
   private pendingRefresh = false;
   private refreshTimer: NodeJS.Timeout | undefined;
@@ -774,6 +864,23 @@ class DraftsController implements vscode.Disposable {
         this.pipelineProvider.update(undefined, true);
         this.statusBar.text = "$(layers) Drafts: uninitialized";
         this.statusBar.tooltip = "Click to initialize Git Drafts";
+      } else if (
+        !this.autoDownloadAttempted &&
+        (msg.includes("ENOENT") || msg.includes("not recognized"))
+      ) {
+        this.autoDownloadAttempted = true;
+        try {
+          await downloadPrebuiltGd();
+          await this.doRefresh();
+          return;
+        } catch (dlErr) {
+          const dlMsg = dlErr instanceof Error ? dlErr.message : String(dlErr);
+          this.clearGroups();
+          this.treeProvider.update(undefined, false, dlMsg);
+          this.pipelineProvider.update(undefined, false, msg);
+          this.statusBar.text = "$(layers) Drafts: CLI missing";
+          this.statusBar.tooltip = dlMsg;
+        }
       } else {
         this.clearGroups();
         this.treeProvider.update(undefined, false, msg);
@@ -1057,6 +1164,7 @@ function extractGitResourcePaths(rootDir: string, args: unknown[]): string[] {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  extensionStorageDir = context.globalStorageUri.fsPath;
   const initialRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const ctrl = new DraftsController(initialRoot);
   context.subscriptions.push(ctrl);
@@ -1133,6 +1241,13 @@ export function activate(context: vscode.ExtensionContext): void {
       term.show();
       term.sendText("cargo install --git https://github.com/Girgis98/git-drafts.git");
     }),
+    vscode.commands.registerCommand(
+      "gitDrafts.downloadCli",
+      wrap(async () => {
+        await downloadPrebuiltGd();
+        await ctrl.refresh();
+      })
+    ),
     vscode.commands.registerCommand(
       "gitDrafts.openDiff",
       async (left: vscode.Uri, right: vscode.Uri, title: string) => {

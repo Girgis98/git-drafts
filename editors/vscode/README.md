@@ -17,13 +17,11 @@ Stop forcing messy AI-agent edits into a single Git staging area. `Git Drafts` i
 - **Diff Editor Hunk Controls:** When viewing any `git-drafts` side-by-side diff, promote or demote the hunk at your cursor directly from the editor title bar (`Promote Hunk ↑` / `Demote Hunk ↓`).
 - **Status Bar Counter:** Live summary (`Drafts: ready(1) · reviewed(0) · draft(2)`) in the status bar.
 
-## Requirements
+## Zero-Step Setup
 
-Requires the `gd` CLI (`git-drafts`). If missing, the sidebar offers a one-click terminal installer, or run:
+No manual CLI install required — on first launch, the extension automatically downloads the prebuilt `gd` binary for your platform (Linux, macOS, or Windows, including Remote-SSH) if it is not already on `PATH`.
 
-```bash
-cargo install --git https://github.com/Girgis98/git-drafts.git
-```
+*(Optional standalone CLI install: `cargo install --git https://github.com/Girgis98/git-drafts.git`)*
 
 ## Quick Start
 
