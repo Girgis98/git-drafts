@@ -302,4 +302,19 @@ fn test_ide_json_blob_patch_apply_and_sync_git_index() {
     r.gl_ok(&["config", "sync-git-index", "false"]);
     let json2 = r.gl_ok(&["status", "--json"]);
     assert!(json2.contains("\"sync_git_index\":false"), "{json2}");
+
+    // Turn sync back on and test reverse sync from external `git add` / `git reset`
+    r.gl_ok(&["config", "sync-git-index", "true"]);
+    r.write("ext.txt", "from default git\n");
+    r.git(&["add", "ext.txt"]);
+    let st_after_git_add = r.gl_ok(&["status"]);
+    assert!(st_after_git_add.contains("[L1] ready (commit target) (1 files)"), "{st_after_git_add}");
+    assert!(st_after_git_add.contains("ext.txt"), "{st_after_git_add}");
+
+    // External `git reset HEAD ext.txt` unstages from ready; app.txt + ext.txt stay in reviewed
+    r.git(&["reset", "HEAD", "--", "ext.txt"]);
+    let st_after_reset = r.gl_ok(&["status"]);
+    assert!(st_after_reset.contains("[L1] ready (commit target) (0 files)"), "{st_after_reset}");
+    assert!(st_after_reset.contains("[L2] reviewed (2 files)"), "{st_after_reset}");
+    assert!(st_after_reset.contains("ext.txt"), "{st_after_reset}");
 }

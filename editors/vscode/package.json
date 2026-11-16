@@ -4,6 +4,29 @@
   "description": "Multi-phase layered staging areas for Git — safe experimentation with AI agents",
   "version": "0.1.0",
   "publisher": "girgis98",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Girgis98/git-drafts.git"
+  },
+  "homepage": "https://github.com/Girgis98/git-drafts#readme",
+  "bugs": {
+    "url": "https://github.com/Girgis98/git-drafts/issues"
+  },
+  "qna": "marketplace",
+  "galleryBanner": {
+    "color": "#181C26",
+    "theme": "dark"
+  },
+  "keywords": [
+    "git",
+    "staging",
+    "ai",
+    "agents",
+    "drafts",
+    "diff"
+  ],
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -11,7 +34,10 @@
     "SCM Providers"
   ],
   "activationEvents": [
-    "workspaceContains:.git"
+    "onStartupFinished",
+    "onView:gitDrafts.pipeline",
+    "onView:gitDrafts.layersView",
+    "onView:gitDrafts.scmLayers"
   ],
   "main": "./out/extension.js",
   "scripts": {
@@ -29,22 +55,83 @@
         }
       }
     },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "git-drafts",
+          "title": "Git Drafts",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "git-drafts": [
+        {
+          "type": "webview",
+          "id": "gitDrafts.pipeline",
+          "name": "Draft Pipeline"
+        },
+        {
+          "id": "gitDrafts.layersView",
+          "name": "Changed Files"
+        }
+      ],
+      "scm": [
+        {
+          "id": "gitDrafts.scmLayers",
+          "name": "Draft Layers"
+        }
+      ]
+    },
     "commands": [
+      { "command": "gitDrafts.focus", "title": "Git Drafts: Focus Sidebar", "icon": "$(layers)" },
+      { "command": "gitDrafts.installCli", "title": "Git Drafts: Install gd CLI", "icon": "$(cloud-download)" },
       { "command": "gitDrafts.init", "title": "Git Drafts: Initialize Draft Layers", "icon": "$(layers)" },
       { "command": "gitDrafts.refresh", "title": "Refresh", "icon": "$(refresh)" },
       { "command": "gitDrafts.stage", "title": "Stage to Draft", "icon": "$(plus)" },
-      { "command": "gitDrafts.promote", "title": "Promote Layer", "icon": "$(arrow-down)" },
-      { "command": "gitDrafts.demote", "title": "Demote Layer", "icon": "$(arrow-up)" },
+      { "command": "gitDrafts.stageFromGit", "title": "Draft: Stage to Top Draft", "icon": "$(layers)" },
+      { "command": "gitDrafts.stageToLayer", "title": "Draft: Stage to Layer...", "icon": "$(layers)" },
+      { "command": "gitDrafts.stageAllFromGit", "title": "Draft: Stage All to Top Draft", "icon": "$(layers)" },
+      { "command": "gitDrafts.demoteFromGit", "title": "Draft: Demote from Ready ↓", "icon": "$(arrow-down)" },
+      { "command": "gitDrafts.promote", "title": "Promote ↑", "icon": "$(arrow-up)" },
+      { "command": "gitDrafts.demote", "title": "Demote ↓", "icon": "$(arrow-down)" },
+      { "command": "gitDrafts.promoteHunk", "title": "Git Drafts: Promote Hunk at Cursor ↑", "icon": "$(arrow-up)" },
+      { "command": "gitDrafts.demoteHunk", "title": "Git Drafts: Demote Hunk at Cursor ↓", "icon": "$(arrow-down)" },
       { "command": "gitDrafts.drop", "title": "Drop from Layer", "icon": "$(trash)" },
       { "command": "gitDrafts.commitReady", "title": "Commit Ready Layer", "icon": "$(check)" },
       { "command": "gitDrafts.commitFile", "title": "Commit File from Ready", "icon": "$(check)" },
       { "command": "gitDrafts.layerAdd", "title": "Add Draft Layer", "icon": "$(add)" },
+      { "command": "gitDrafts.layerRename", "title": "Rename Layer", "icon": "$(edit)" },
+      { "command": "gitDrafts.layerRemove", "title": "Remove Layer", "icon": "$(close)" },
       { "command": "gitDrafts.undo", "title": "Undo Layer Op", "icon": "$(discard)" },
       { "command": "gitDrafts.toggleSyncGitIndex", "title": "Toggle .git/index Mirror", "icon": "$(sync)" },
       { "command": "gitDrafts.openDiff", "title": "Open Layer Diff" }
     ],
     "menus": {
+      "editor/title": [
+        { "command": "gitDrafts.promoteHunk", "when": "resourceScheme == git-drafts", "group": "navigation@1" },
+        { "command": "gitDrafts.demoteHunk", "when": "resourceScheme == git-drafts", "group": "navigation@2" }
+      ],
+      "view/title": [
+        { "command": "gitDrafts.commitReady", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/", "group": "navigation@1" },
+        { "command": "gitDrafts.undo", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/", "group": "navigation@2" },
+        { "command": "gitDrafts.refresh", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/", "group": "navigation@3" },
+        { "command": "gitDrafts.layerAdd", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/", "group": "1_manage" },
+        { "command": "gitDrafts.toggleSyncGitIndex", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/", "group": "1_manage" }
+      ],
+      "view/item/context": [
+        { "command": "gitDrafts.stage", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/ && viewItem =~ /^(wtGroup|wtFile)$/", "group": "inline@1" },
+        { "command": "gitDrafts.commitFile", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/ && viewItem == readyFile", "group": "inline@1" },
+        { "command": "gitDrafts.promote", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/ && viewItem =~ /^(upperLayer|upperFile)$/", "group": "inline@1" },
+        { "command": "gitDrafts.demote", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/ && viewItem =~ /^(readyLayer|upperLayer|readyFile|upperFile)$/", "group": "inline@2" },
+        { "command": "gitDrafts.drop", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/ && viewItem =~ /^(readyFile|upperFile)$/", "group": "inline@3" },
+        { "command": "gitDrafts.layerRename", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/ && viewItem =~ /^(readyLayer|upperLayer)$/", "group": "1_layer" },
+        { "command": "gitDrafts.layerRemove", "when": "view =~ /^gitDrafts\\.(layersView|scmLayers)$/ && viewItem =~ /^(readyLayer|upperLayer)$/", "group": "1_layer" }
+      ],
       "scm/title": [
+        { "command": "gitDrafts.focus", "when": "scmProvider == git", "group": "navigation" },
+        { "command": "gitDrafts.init", "when": "scmProvider == git", "group": "1_drafts" },
+        { "command": "gitDrafts.toggleSyncGitIndex", "when": "scmProvider == git", "group": "1_drafts" },
         { "command": "gitDrafts.commitReady", "when": "scmProvider == git-drafts", "group": "navigation" },
         { "command": "gitDrafts.refresh", "when": "scmProvider == git-drafts", "group": "navigation" },
         { "command": "gitDrafts.undo", "when": "scmProvider == git-drafts", "group": "navigation" },
@@ -53,11 +140,15 @@
         { "command": "gitDrafts.init", "when": "scmProvider == git-drafts", "group": "1_manage" }
       ],
       "scm/resourceGroup/context": [
+        { "command": "gitDrafts.stageAllFromGit", "when": "scmProvider == git && scmResourceGroup == workingTree", "group": "1_drafts" },
         { "command": "gitDrafts.stage", "when": "scmProvider == git-drafts && scmResourceGroup == wt", "group": "inline" },
         { "command": "gitDrafts.promote", "when": "scmProvider == git-drafts && scmResourceGroup =~ /^layer:[1-9]/", "group": "inline" },
         { "command": "gitDrafts.demote", "when": "scmProvider == git-drafts && scmResourceGroup =~ /^layer:/", "group": "inline" }
       ],
       "scm/resourceState/context": [
+        { "command": "gitDrafts.stageFromGit", "when": "scmProvider == git && (scmResourceGroup == workingTree || scmResourceGroup == untracked)", "group": "inline@1" },
+        { "command": "gitDrafts.stageToLayer", "when": "scmProvider == git && (scmResourceGroup == workingTree || scmResourceGroup == untracked)", "group": "1_drafts" },
+        { "command": "gitDrafts.demoteFromGit", "when": "scmProvider == git && scmResourceGroup == index", "group": "inline@1" },
         { "command": "gitDrafts.stage", "when": "scmProvider == git-drafts && scmResourceGroup == wt", "group": "inline" },
         { "command": "gitDrafts.commitFile", "when": "scmProvider == git-drafts && scmResourceGroup == layer:0", "group": "inline" },
         { "command": "gitDrafts.promote", "when": "scmProvider == git-drafts && scmResourceGroup =~ /^layer:[1-9]/", "group": "inline" },

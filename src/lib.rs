@@ -3,7 +3,7 @@ pub mod ops;
 pub mod store;
 
 use git::RepoCtx;
-use ops::{InsertPos, RmMode};
+use ops::{DropOpts, InsertPos, RmMode};
 use std::env;
 use std::io::Read;
 use store::LayerStore;
@@ -295,12 +295,14 @@ pub fn run() -> Result<(), String> {
             ops::cmd_drop(
                 &repo,
                 &store,
-                &layer_spec,
-                &paths,
-                interactive,
-                all,
-                cascade,
-                hard,
+                DropOpts {
+                    layer: &layer_spec,
+                    paths: &paths,
+                    interactive,
+                    all,
+                    cascade,
+                    hard,
+                },
             )
         }
         "commit" => {

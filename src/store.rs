@@ -157,6 +157,7 @@ impl LayerStore {
     pub fn load_and_sync(repo: &RepoCtx) -> Result<(Self, bool), String> {
         let mut store = Self::load(repo)?;
         let synced = store.sync_head(repo)?;
+        store.sync_from_git_index(repo)?;
         Ok((store, synced))
     }
 
@@ -183,10 +184,125 @@ impl LayerStore {
         Ok(true)
     }
 
+    fn mirror_tree_path(&self) -> PathBuf {
+        self.root.join("mirror_state")
+    }
+
+    fn cache_dir(&self) -> PathBuf {
+        self.root.join("cache")
+    }
+
+    fn stat_key(path: &Path) -> Option<String> {
+        let meta = fs::metadata(path).ok()?;
+        let mtime = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
+        Some(format!("{}:{mtime}", meta.len()))
+    }
+
+    pub fn cached_head_tree(&self, repo: &RepoCtx) -> Result<String, String> {
+        let key = &self.manifest.base_head;
+        let cache_file = self.cache_dir().join("_head");
+        if let Ok(raw) = fs::read_to_string(&cache_file) {
+            if let Some((k, v)) = raw.trim().split_once('|') {
+                if k == key && !v.is_empty() {
+                    return Ok(v.to_string());
+                }
+            }
+        }
+        let tree = repo.tree_for_ref_or_unborn(Some(key))?;
+        let _ = fs::create_dir_all(self.cache_dir());
+        let _ = fs::write(&cache_file, format!("{key}|{tree}\n"));
+        Ok(tree)
+    }
+
+    pub fn cached_tree_for_index(&self, repo: &RepoCtx, layer: &str) -> Result<String, String> {
+        let idx = self.idx_path(layer);
+        let sk = Self::stat_key(&idx);
+        let cache_file = self.cache_dir().join(layer);
+        if let (Some(ref key), Ok(raw)) = (&sk, fs::read_to_string(&cache_file)) {
+            if let Some((k, v)) = raw.trim().split_once('|') {
+                if k == key && !v.is_empty() {
+                    return Ok(v.to_string());
+                }
+            }
+        }
+        let tree = repo.write_tree(&idx)?;
+        if let Some(key) = Self::stat_key(&idx).or(sk) {
+            let _ = fs::create_dir_all(self.cache_dir());
+            let _ = fs::write(&cache_file, format!("{key}|{tree}\n"));
+        }
+        Ok(tree)
+    }
+
+    pub fn sync_from_git_index(&self, repo: &RepoCtx) -> Result<(), String> {
+        if !self.manifest.sync_git_index {
+            return Ok(());
+        }
+        let default_idx = repo.git_dir.join("index");
+        if !default_idx.exists() {
+            return Ok(());
+        }
+        let cur_stat = Self::stat_key(&default_idx);
+        let state_raw = fs::read_to_string(self.mirror_tree_path()).ok();
+        let (last_stat, last_tree) = match state_raw.as_deref().map(str::trim) {
+            Some(s) => match s.split_once('|') {
+                Some((st, tr)) => (Some(st.to_string()), Some(tr.to_string())),
+                None => (None, Some(s.to_string())),
+            },
+            None => (None, None),
+        };
+        if cur_stat.is_some() && cur_stat == last_stat {
+            return Ok(());
+        }
+
+        let git_tree = repo.write_tree(&default_idx)?;
+        if last_tree.as_deref() == Some(git_tree.as_str()) {
+            if let Some(st) = cur_stat {
+                let _ = fs::write(self.mirror_tree_path(), format!("{st}|{git_tree}\n"));
+            }
+            return Ok(());
+        }
+
+        let l1_idx = self.idx_path(&self.manifest.layers[0]);
+        let t1_old = self.cached_tree_for_index(repo, &self.manifest.layers[0])?;
+        if git_tree != t1_old {
+            let head_tree = self.cached_head_tree(repo)?;
+            let changed = repo.diff_tree_names(&t1_old, &git_tree, &[])?;
+            let mut staged_paths = Vec::new();
+            for (_, path) in changed {
+                let matches_head = repo
+                    .diff_tree_names(&head_tree, &git_tree, std::slice::from_ref(&path))?
+                    .is_empty();
+                if !matches_head {
+                    staged_paths.push(path);
+                }
+            }
+            repo.read_tree(&l1_idx, &git_tree)?;
+            if !staged_paths.is_empty() && self.manifest.layers.len() > 1 {
+                let patch = repo.diff_tree_patch(&t1_old, &git_tree, &staged_paths, false)?;
+                for l in &self.manifest.layers[1..] {
+                    let idx = self.idx_path(l);
+                    let _ = repo.apply_cached(&idx, &patch, true, false);
+                }
+            }
+        }
+        let st_after = Self::stat_key(&default_idx).unwrap_or_default();
+        let _ = fs::write(self.mirror_tree_path(), format!("{st_after}|{git_tree}\n"));
+        Ok(())
+    }
+
     pub fn maybe_mirror_git_index(&self, repo: &RepoCtx) -> Result<(), String> {
         if self.manifest.sync_git_index {
-            let l1 = self.idx_path(&self.manifest.layers[0]);
+            let l1_name = &self.manifest.layers[0];
+            let l1 = self.idx_path(l1_name);
+            let t1 = self.cached_tree_for_index(repo, l1_name)?;
             repo.mirror_index_to_default(&l1)?;
+            let st = Self::stat_key(&repo.git_dir.join("index")).unwrap_or_default();
+            let _ = fs::write(self.mirror_tree_path(), format!("{st}|{t1}\n"));
         }
         Ok(())
     }

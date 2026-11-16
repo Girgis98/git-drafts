@@ -40,27 +40,26 @@ fn c_status(code: &str, tty: bool) -> String {
 
 /// Returns [T0 (HEAD), T1, ..., Tn].
 pub fn compute_trees(repo: &RepoCtx, store: &LayerStore) -> Result<Vec<String>, String> {
-    let head_tree = repo.tree_for_ref_or_unborn(Some(&store.manifest.base_head))?;
-    let idx_paths: Vec<_> = store
-        .manifest
-        .layers
-        .iter()
-        .map(|l| store.idx_path(l))
-        .collect();
-
-    let layer_trees: Vec<Result<String, String>> = thread::scope(|s| {
-        let handles: Vec<_> = idx_paths
+    let (head_res, layer_trees) = thread::scope(|s| {
+        let head_h = s.spawn(|| store.cached_head_tree(repo));
+        let handles: Vec<_> = store
+            .manifest
+            .layers
             .iter()
-            .map(|p| s.spawn(move || repo.write_tree(p)))
+            .map(|l| s.spawn(move || store.cached_tree_for_index(repo, l)))
             .collect();
-        handles
+        let head_res = head_h
+            .join()
+            .unwrap_or_else(|_| Err("head tree thread panicked".to_string()));
+        let trees: Vec<Result<String, String>> = handles
             .into_iter()
             .map(|h| h.join().unwrap_or_else(|_| Err("worker thread panicked".to_string())))
-            .collect()
+            .collect();
+        (head_res, trees)
     });
 
     let mut out = Vec::with_capacity(1 + store.manifest.layers.len());
-    out.push(head_tree);
+    out.push(head_res?);
     for res in layer_trees {
         out.push(res?);
     }
@@ -97,35 +96,34 @@ fn collect_status(repo: &RepoCtx, store: &LayerStore) -> Result<StatusSnapshot, 
     let n = store.manifest.layers.len();
     let top_idx = store.idx_path(&store.manifest.layers[n - 1]);
 
-    let (layer_diffs_res, wt_diff, untracked) = thread::scope(|s| {
+    let (layer_diffs_res, wt_res) = thread::scope(|s| {
         let mut diff_handles = Vec::with_capacity(n);
         for i in 0..n {
             let ta = &trees[i];
             let tb = &trees[i + 1];
             diff_handles.push(s.spawn(move || repo.diff_tree_names(ta, tb, &[])));
         }
-        let wt_h = s.spawn(|| repo.diff_files_names(&top_idx, &[]));
-        let un_h = s.spawn(|| repo.untracked_files(&top_idx, &[]));
+        let wt_h = s.spawn(|| repo.wt_status(&top_idx));
 
         let mut diffs = Vec::with_capacity(n);
         for h in diff_handles {
             diffs.push(h.join().unwrap_or_else(|_| Err("diff thread panicked".to_string())));
         }
         let wt = wt_h.join().unwrap_or_else(|_| Err("wt thread panicked".to_string()));
-        let un = un_h.join().unwrap_or_else(|_| Err("untracked thread panicked".to_string()));
-        (diffs, wt, un)
+        (diffs, wt)
     });
 
     let mut layer_diffs = Vec::with_capacity(n);
     for r in layer_diffs_res {
         layer_diffs.push(r?);
     }
+    let wt = wt_res?;
 
     Ok(StatusSnapshot {
         trees,
         layer_diffs,
-        wt_modified: wt_diff?,
-        wt_untracked: untracked?,
+        wt_modified: wt.modified,
+        wt_untracked: wt.untracked,
     })
 }
 
@@ -546,34 +544,34 @@ pub fn cmd_demote(
     Ok(())
 }
 
-pub fn cmd_drop(
-    repo: &RepoCtx,
-    store: &LayerStore,
-    layer_spec: &str,
-    paths: &[String],
-    interactive: bool,
-    all: bool,
-    cascade: bool,
-    hard: bool,
-) -> Result<(), String> {
-    if !interactive && !all && paths.is_empty() {
+pub struct DropOpts<'a> {
+    pub layer: &'a str,
+    pub paths: &'a [String],
+    pub interactive: bool,
+    pub all: bool,
+    pub cascade: bool,
+    pub hard: bool,
+}
+
+pub fn cmd_drop(repo: &RepoCtx, store: &LayerStore, opts: DropOpts<'_>) -> Result<(), String> {
+    if !opts.interactive && !opts.all && opts.paths.is_empty() {
         return Err("drop requires <paths...>, --all, or -p".to_string());
     }
-    if hard && interactive {
+    if opts.hard && opts.interactive {
         return Err("--hard cannot be combined with -p".to_string());
     }
-    let k = store.resolve_layer(layer_spec)?;
+    let k = store.resolve_layer(opts.layer)?;
     let trees = compute_trees(repo, store)?;
     let n = store.manifest.layers.len();
-    let end = if cascade || hard { n } else { k + 1 };
+    let end = if opts.cascade || opts.hard { n } else { k + 1 };
 
     store.snapshot_for_undo()?;
 
     let t_below = &trees[k];
-    if interactive {
+    if opts.interactive {
         let idx = store.idx_path(&store.manifest.layers[k]);
         let t_before = &trees[k + 1];
-        repo.reset_patch_interactive(&idx, t_below, paths)?;
+        repo.reset_patch_interactive(&idx, t_below, opts.paths)?;
         let t_after = repo.write_tree(&idx)?;
         if end > k + 1 && &t_after != t_before {
             let delta = repo.diff_tree_patch(t_before, &t_after, &[], false)?;
@@ -583,14 +581,14 @@ pub fn cmd_drop(
         }
     } else {
         for i in k..end {
-            let patch = repo.diff_tree_patch(&trees[i + 1], t_below, paths, false)?;
+            let patch = repo.diff_tree_patch(&trees[i + 1], t_below, opts.paths, false)?;
             repo.apply_cached(&store.idx_path(&store.manifest.layers[i]), &patch, false, false)?;
         }
-        if hard {
+        if opts.hard {
             let top_idx = store.idx_path(&store.manifest.layers[n - 1]);
-            let wt_patch = repo.diff_files_patch(&top_idx, paths, false)?;
+            let wt_patch = repo.diff_files_patch(&top_idx, opts.paths, false)?;
             repo.apply_worktree_reverse(&wt_patch)?;
-            let untracked = repo.untracked_files(&top_idx, paths)?;
+            let untracked = repo.untracked_files(&top_idx, opts.paths)?;
             repo.remove_untracked_files(&untracked)?;
         }
     }

@@ -2,7 +2,13 @@
 name = "git-drafts"
 version = "0.1.0"
 edition = "2021"
-description = "Multi-phase layered staging drafts for Git"
+description = "Multi-phase layered staging drafts for Git — safe experimentation with AI agents"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Girgis98/git-drafts"
+homepage = "https://github.com/Girgis98/git-drafts"
+keywords = ["git", "staging", "cli", "ai-agents", "workflow"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "git-drafts"

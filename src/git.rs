@@ -3,6 +3,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 #[derive(Clone, Debug)]
+pub struct WtStatus {
+    pub modified: Vec<(String, String)>,
+    pub untracked: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct RepoCtx {
     pub git_dir: PathBuf,
     pub work_tree: PathBuf,
@@ -10,6 +16,25 @@ pub struct RepoCtx {
 
 impl RepoCtx {
     pub fn discover(cwd: Option<&Path>) -> Result<Self, String> {
+        let start = match cwd {
+            Some(p) => p.to_path_buf(),
+            None => std::env::current_dir().map_err(|e| format!("current_dir: {e}"))?,
+        };
+        let mut cur: Option<&Path> = Some(&start);
+        while let Some(dir) = cur {
+            let dot_git = dir.join(".git");
+            if dot_git.is_dir() && dot_git.join("HEAD").is_file() && dot_git.join("objects").is_dir() {
+                return Ok(Self {
+                    git_dir: dot_git,
+                    work_tree: dir.to_path_buf(),
+                });
+            }
+            if dot_git.exists() {
+                break;
+            }
+            cur = dir.parent();
+        }
+
         let mut cmd = Command::new("git");
         cmd.args(["rev-parse", "--absolute-git-dir", "--show-toplevel"]);
         if let Some(dir) = cwd {
@@ -64,6 +89,24 @@ impl RepoCtx {
     }
 
     pub fn head_oid(&self) -> Result<Option<String>, String> {
+        if let Ok(head_raw) = std::fs::read_to_string(self.git_dir.join("HEAD")) {
+            let trimmed = head_raw.trim();
+            if let Some(ref_rel) = trimmed.strip_prefix("ref: ") {
+                if let Ok(ref_oid) = std::fs::read_to_string(self.git_dir.join(ref_rel.trim())) {
+                    let oid = ref_oid.trim();
+                    if (oid.len() == 40 || oid.len() == 64)
+                        && oid.bytes().all(|b| b.is_ascii_hexdigit())
+                    {
+                        return Ok(Some(oid.to_string()));
+                    }
+                }
+            } else if (trimmed.len() == 40 || trimmed.len() == 64)
+                && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Ok(Some(trimmed.to_string()));
+            }
+        }
+
         let out = self
             .git_cmd(None)
             .args(["rev-parse", "--verify", "-q", "HEAD"])
@@ -232,6 +275,38 @@ impl RepoCtx {
             .git_cmd(Some(index_path))
             .args(["update-index", "-q", "--refresh"])
             .output();
+    }
+
+    pub fn wt_status(&self, index_path: &Path) -> Result<WtStatus, String> {
+        let mut c = self.git_cmd(Some(index_path));
+        c.args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "-uall",
+            "--no-renames",
+        ]);
+        let out = self.run_checked(c, "git status")?;
+        let mut modified = Vec::new();
+        let mut untracked = Vec::new();
+        for rec in out.stdout.split(|&b| b == 0).filter(|s| !s.is_empty()) {
+            if rec.len() < 4 {
+                continue;
+            }
+            let x = rec[0] as char;
+            let y = rec[1] as char;
+            let path = String::from_utf8_lossy(&rec[3..]).to_string();
+            if x == '?' && y == '?' {
+                untracked.push(path);
+            } else if y != ' ' {
+                modified.push((y.to_string(), path));
+            }
+        }
+        Ok(WtStatus {
+            modified,
+            untracked,
+        })
     }
 
     pub fn diff_files_names(
