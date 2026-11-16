@@ -1,4 +1,4 @@
-![Git Drafts for VS Code](media/hero.png)
+![Git Drafts for VS Code](https://raw.githubusercontent.com/Girgis98/git-drafts/main/editors/vscode/media/hero.png)
 
 # Git Drafts for VS Code
 
@@ -6,7 +6,7 @@
 
 Stop forcing messy AI-agent edits into a single Git staging area. `Git Drafts` integrates directly into **Source Control** and adds a dedicated **Git Drafts** Activity Bar view, diff-editor hunk controls, and bidirectional `.git/index` sync powered by [`gd`](https://github.com/Girgis98/git-drafts).
 
-![Draft Layers and Diff Hunk Controls](media/preview.png)
+![Draft Layers and Diff Hunk Controls](https://raw.githubusercontent.com/Girgis98/git-drafts/main/editors/vscode/media/preview.png)
 
 ## Features
 
