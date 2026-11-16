@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Fix Extension Details README images (`media/hero.png`, `media/preview.png`) using Markdown syntax
+- Match Marketplace publisher ID (`GirgisMamdouh`)
+
 ## 0.1.0
 
 - Initial release of **Git Drafts** (`gd`) for VS Code
