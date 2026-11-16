@@ -6,7 +6,7 @@
   <a href="https://github.com/Girgis98/git-drafts/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Girgis98/git-drafts/ci.yml?branch=main&style=flat-square&label=CI" alt="CI" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-10b981?style=flat-square" alt="MIT License" /></a>
   <img src="https://img.shields.io/badge/rust-zero--deps-6366f1?style=flat-square" alt="Zero-dep Rust" />
-  <a href="editors/vscode"><img src="https://img.shields.io/badge/VS%20Code-extension-38bdf8?style=flat-square" alt="VS Code Extension" /></a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=GirgisMamdouh.git-drafts"><img src="https://img.shields.io/visual-studio-marketplace/v/GirgisMamdouh.git-drafts?style=flat-square&label=VS%20Code%20Marketplace&color=38bdf8" alt="VS Code Marketplace" /></a>
 </p>
 
 ---
@@ -171,11 +171,15 @@ gd layer rm security-check --merge-down   # or --merge-up / --drop
 
 `git-drafts` integrates at three levels:
 
-1. **VS Code / Cursor Extension ([editors/vscode](editors/vscode)):**
+1. **VS Code / Cursor Extension ([VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=GirgisMamdouh.git-drafts) · [Source](editors/vscode)):**
    - **Draft Layers** tree directly inside Source Control (with multiselect `Stage`, `Promote ↑`, `Demote ↓`, `Drop`, `Commit File`)
    - Dedicated **Git Drafts** Activity Bar (`Draft Pipeline` webview + `Changed Files` tree)
    - Inline actions on built-in VS Code Git items (`Stage to Top Draft`, `Stage to Layer...`, `Demote from Ready ↓`)
    - Diff editor title buttons (`Promote Hunk ↑` / `Demote Hunk ↓`) and live Status Bar counter
+   ```bash
+   code --install-extension GirgisMamdouh.git-drafts
+   ```
+   Or build from source:
    ```bash
    cd editors/vscode
    npm ci && npm run compile
