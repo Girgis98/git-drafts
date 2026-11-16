@@ -1,8 +1,13 @@
+pub mod agent;
 pub mod git;
+pub mod json;
+pub mod mcp;
 pub mod ops;
 pub mod store;
 
+use agent::AgentTarget;
 use git::RepoCtx;
+use mcp::AgentRole;
 use ops::{DropOpts, InsertPos, RmMode};
 use std::env;
 use std::fs;
@@ -90,6 +95,9 @@ USAGE:
                                            Output file bytes at a layer (for IDE diff providers)
   gd patch-apply --from <src> --to <dst>   Apply unified patch from stdin between layers
   gd config <key> [<value>]                Get or set repo draft config (sync-git-index)
+  gd agent init [--target T] [--role R]    Write AI agent instructions, skill & MCP config
+  gd agent snippet                         Print concise agent instruction markdown block
+  gd mcp [--role coder|reviewer|lead]      Run stdio MCP server with role guardrails
   gd undo                                  Restore previous layer state
 "
     );
@@ -114,9 +122,36 @@ pub fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let repo = RepoCtx::discover(None)?;
     let cmd = raw_args[0].as_str();
     let rest = &raw_args[1..];
+
+    if cmd == "mcp" {
+        let mut role = AgentRole::Lead;
+        let mut i = 0;
+        while i < rest.len() {
+            match rest[i].as_str() {
+                "--role" => {
+                    i += 1;
+                    let v = rest.get(i).ok_or("--role requires a value")?;
+                    role = AgentRole::parse(v)?;
+                }
+                "-h" | "--help" => {
+                    println!("USAGE: gd mcp [--role coder|reviewer|lead]");
+                    return Ok(());
+                }
+                other => return Err(format!("unknown flag '{other}'")),
+            }
+            i += 1;
+        }
+        return mcp::serve(role);
+    }
+
+    if cmd == "agent" && rest.first().map(String::as_str) == Some("snippet") {
+        agent::cmd_agent_snippet();
+        return Ok(());
+    }
+
+    let repo = RepoCtx::discover(None)?;
 
     match cmd {
         "init" => {
@@ -529,6 +564,43 @@ pub fn run() -> Result<(), String> {
                 return Err("USAGE: gd config <key> [<value>]".to_string());
             }
             ops::cmd_config(&repo, &mut store, &rest[0], rest.get(1).map(String::as_str))
+        }
+        "agent" => {
+            let sub = rest.first().map(String::as_str).unwrap_or("init");
+            let sub_rest = if rest.is_empty() { &[] } else { &rest[1..] };
+            match sub {
+                "init" => {
+                    let mut targets = Vec::new();
+                    let mut role = AgentRole::Lead;
+                    let mut i = 0;
+                    while i < sub_rest.len() {
+                        match sub_rest[i].as_str() {
+                            "--target" | "-t" => {
+                                i += 1;
+                                let spec = sub_rest.get(i).ok_or("--target requires a value")?;
+                                targets.extend(AgentTarget::parse_list(spec)?);
+                            }
+                            "--role" => {
+                                i += 1;
+                                let r = sub_rest.get(i).ok_or("--role requires a value")?;
+                                role = AgentRole::parse(r)?;
+                            }
+                            "-h" | "--help" => {
+                                println!("USAGE: gd agent init [--target auto|all|agents|claude|cursor|copilot|gemini|skill|mcp] [--role coder|reviewer|lead]");
+                                return Ok(());
+                            }
+                            other => return Err(format!("unknown flag '{other}'")),
+                        }
+                        i += 1;
+                    }
+                    agent::cmd_agent_init(&repo, &targets, role)
+                }
+                "snippet" => {
+                    agent::cmd_agent_snippet();
+                    Ok(())
+                }
+                other => Err(format!("unknown agent subcommand '{other}'")),
+            }
         }
         "undo" => {
             let mut store = LayerStore::load(&repo)?;

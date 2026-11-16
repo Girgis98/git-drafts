@@ -190,7 +190,11 @@ pub fn cmd_status(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Result<()
     Ok(())
 }
 
-pub fn cmd_status_json(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Result<(), String> {
+pub fn build_status_json(
+    repo: &RepoCtx,
+    store: &LayerStore,
+    synced: bool,
+) -> Result<String, String> {
     let snap = collect_status(repo, store)?;
     let mut out = String::new();
     out.push('{');
@@ -242,8 +246,77 @@ pub fn cmd_status_json(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Resu
         out.push_str(&json_escape(path));
     }
     out.push_str("]}}");
+    Ok(out)
+}
+
+pub fn cmd_status_json(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Result<(), String> {
+    let out = build_status_json(repo, store, synced)?;
     println!("{out}");
     Ok(())
+}
+
+pub fn build_diff_bytes(
+    repo: &RepoCtx,
+    store: &LayerStore,
+    layer: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+    paths: &[String],
+    color: bool,
+) -> Result<Vec<u8>, String> {
+    let trees = compute_trees(repo, store)?;
+    let n = store.manifest.layers.len();
+    let top_idx = store.idx_path(&store.manifest.layers[n - 1]);
+
+    if from.is_some() || to.is_some() {
+        let f = from.unwrap_or("head");
+        let t = to.unwrap_or("wt");
+        if t.eq_ignore_ascii_case("wt") {
+            if f.eq_ignore_ascii_case("wt") {
+                return Ok(Vec::new());
+            }
+            return if f.eq_ignore_ascii_case("head") {
+                let tmp = store.root.join("diff.tmp.idx");
+                repo.read_tree(&tmp, &trees[0])?;
+                let patch = repo.diff_files_patch(&tmp, paths, color);
+                let _ = fs::remove_file(&tmp);
+                patch
+            } else {
+                let k = store.resolve_layer(f)?;
+                repo.diff_files_patch(&store.idx_path(&store.manifest.layers[k]), paths, color)
+            };
+        }
+        let ta = resolve_tree_spec(store, &trees, f)?;
+        let tb = resolve_tree_spec(store, &trees, t)?;
+        return repo.diff_tree_patch(ta, tb, paths, color);
+    }
+
+    if let Some(spec) = layer {
+        if spec.eq_ignore_ascii_case("wt") {
+            return repo.diff_files_patch(&top_idx, paths, color);
+        }
+        let k = store.resolve_layer(spec)?;
+        return repo.diff_tree_patch(&trees[k], &trees[k + 1], paths, color);
+    }
+
+    let mut buf = Vec::new();
+    for (i, name) in store.manifest.layers.iter().enumerate() {
+        let patch = repo.diff_tree_patch(&trees[i], &trees[i + 1], paths, color)?;
+        if !patch.is_empty() {
+            let hdr = c_bold(&format!("=== [L{}] {} ===", i + 1, name), color);
+            buf.extend_from_slice(hdr.as_bytes());
+            buf.push(b'\n');
+            buf.extend_from_slice(&patch);
+        }
+    }
+    let wt_patch = repo.diff_files_patch(&top_idx, paths, color)?;
+    if !wt_patch.is_empty() {
+        let hdr = c_bold("=== [WT] working-tree ===", color);
+        buf.extend_from_slice(hdr.as_bytes());
+        buf.push(b'\n');
+        buf.extend_from_slice(&wt_patch);
+    }
+    Ok(buf)
 }
 
 pub fn cmd_diff(
@@ -255,75 +328,12 @@ pub fn cmd_diff(
     paths: &[String],
 ) -> Result<(), String> {
     let color = is_tty();
-    let trees = compute_trees(repo, store)?;
-    let n = store.manifest.layers.len();
-    let top_idx = store.idx_path(&store.manifest.layers[n - 1]);
-
-    if from.is_some() || to.is_some() {
-        let f = from.unwrap_or("head");
-        let t = to.unwrap_or("wt");
-        if t.eq_ignore_ascii_case("wt") {
-            if f.eq_ignore_ascii_case("wt") {
-                return Ok(());
-            }
-            let src_idx = if f.eq_ignore_ascii_case("head") {
-                let tmp = store.root.join("diff.tmp.idx");
-                repo.read_tree(&tmp, &trees[0])?;
-                let patch = repo.diff_files_patch(&tmp, paths, color);
-                let _ = fs::remove_file(&tmp);
-                patch?
-            } else {
-                let k = store.resolve_layer(f)?;
-                repo.diff_files_patch(&store.idx_path(&store.manifest.layers[k]), paths, color)?
-            };
-            io::stdout()
-                .write_all(&src_idx)
-                .map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-        let ta = resolve_tree_spec(store, &trees, f)?;
-        let tb = resolve_tree_spec(store, &trees, t)?;
-        let patch = repo.diff_tree_patch(ta, tb, paths, color)?;
-        io::stdout().write_all(&patch).map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    if let Some(spec) = layer {
-        if spec.eq_ignore_ascii_case("wt") {
-            let patch = repo.diff_files_patch(&top_idx, paths, color)?;
-            io::stdout().write_all(&patch).map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-        let k = store.resolve_layer(spec)?;
-        let patch = repo.diff_tree_patch(&trees[k], &trees[k + 1], paths, color)?;
-        io::stdout().write_all(&patch).map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    let mut any = false;
-    for (i, name) in store.manifest.layers.iter().enumerate() {
-        let patch = repo.diff_tree_patch(&trees[i], &trees[i + 1], paths, color)?;
-        if !patch.is_empty() {
-            any = true;
-            println!(
-                "{}",
-                c_bold(&format!("=== [L{}] {} ===", i + 1, name), color)
-            );
-            io::stdout().write_all(&patch).map_err(|e| e.to_string())?;
-        }
-    }
-    let wt_patch = repo.diff_files_patch(&top_idx, paths, color)?;
-    if !wt_patch.is_empty() {
-        any = true;
-        println!("{}", c_bold("=== [WT] working-tree ===", color));
-        io::stdout()
-            .write_all(&wt_patch)
-            .map_err(|e| e.to_string())?;
-    }
-    if !any {
+    let bytes = build_diff_bytes(repo, store, layer, from, to, paths, color)?;
+    if bytes.is_empty() && layer.is_none() && from.is_none() && to.is_none() {
         println!("(no diffs)");
+        return Ok(());
     }
-    Ok(())
+    io::stdout().write_all(&bytes).map_err(|e| e.to_string())
 }
 
 fn resolve_tree_spec<'a>(
@@ -338,14 +348,14 @@ fn resolve_tree_spec<'a>(
     Ok(&trees[k + 1])
 }
 
-pub fn cmd_stage(
+pub fn op_stage(
     repo: &RepoCtx,
     store: &LayerStore,
     layer: Option<&str>,
     paths: &[String],
     interactive: bool,
     all: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if !interactive && !all && paths.is_empty() {
         return Err("stage requires <paths...>, --all, or -p".to_string());
     }
@@ -379,15 +389,27 @@ pub fn cmd_stage(
         }
     }
     store.maybe_mirror_git_index(repo)?;
-    println!(
+    Ok(format!(
         "staged into [L{}] {}",
         target + 1,
         store.manifest.layers[target]
-    );
+    ))
+}
+
+pub fn cmd_stage(
+    repo: &RepoCtx,
+    store: &LayerStore,
+    layer: Option<&str>,
+    paths: &[String],
+    interactive: bool,
+    all: bool,
+) -> Result<(), String> {
+    let msg = op_stage(repo, store, layer, paths, interactive, all)?;
+    println!("{msg}");
     Ok(())
 }
 
-pub fn cmd_promote(
+pub fn op_promote(
     repo: &RepoCtx,
     store: &LayerStore,
     from: Option<&str>,
@@ -395,12 +417,12 @@ pub fn cmd_promote(
     paths: &[String],
     interactive: bool,
     all: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if !interactive && !all && paths.is_empty() {
         return Err("promote requires <paths...>, --all, or -p".to_string());
     }
     if let Some("wt") | Some("WT") = from {
-        return cmd_stage(repo, store, to, paths, interactive, all);
+        return op_stage(repo, store, to, paths, interactive, all);
     }
 
     let trees = compute_trees(repo, store)?;
@@ -490,17 +512,16 @@ pub fn cmd_promote(
     }
 
     store.maybe_mirror_git_index(repo)?;
-    println!(
+    Ok(format!(
         "promoted [L{}] {} -> [L{}] {}",
         src + 1,
         store.manifest.layers[src],
         dst + 1,
         store.manifest.layers[dst]
-    );
-    Ok(())
+    ))
 }
 
-pub fn cmd_demote(
+pub fn cmd_promote(
     repo: &RepoCtx,
     store: &LayerStore,
     from: Option<&str>,
@@ -509,6 +530,20 @@ pub fn cmd_demote(
     interactive: bool,
     all: bool,
 ) -> Result<(), String> {
+    let msg = op_promote(repo, store, from, to, paths, interactive, all)?;
+    println!("{msg}");
+    Ok(())
+}
+
+pub fn op_demote(
+    repo: &RepoCtx,
+    store: &LayerStore,
+    from: Option<&str>,
+    to: Option<&str>,
+    paths: &[String],
+    interactive: bool,
+    all: bool,
+) -> Result<String, String> {
     if !interactive && !all && paths.is_empty() {
         return Err("demote requires <paths...>, --all, or -p".to_string());
     }
@@ -584,12 +619,25 @@ pub fn cmd_demote(
     } else {
         format!("[L{}] {}", dst + 1, store.manifest.layers[dst])
     };
-    println!(
+    Ok(format!(
         "demoted [L{}] {} -> {}",
         src + 1,
         store.manifest.layers[src],
         dst_label
-    );
+    ))
+}
+
+pub fn cmd_demote(
+    repo: &RepoCtx,
+    store: &LayerStore,
+    from: Option<&str>,
+    to: Option<&str>,
+    paths: &[String],
+    interactive: bool,
+    all: bool,
+) -> Result<(), String> {
+    let msg = op_demote(repo, store, from, to, paths, interactive, all)?;
+    println!("{msg}");
     Ok(())
 }
 
@@ -602,7 +650,7 @@ pub struct DropOpts<'a> {
     pub hard: bool,
 }
 
-pub fn cmd_drop(repo: &RepoCtx, store: &LayerStore, opts: DropOpts<'_>) -> Result<(), String> {
+pub fn op_drop(repo: &RepoCtx, store: &LayerStore, opts: DropOpts<'_>) -> Result<String, String> {
     if !opts.interactive && !opts.all && opts.paths.is_empty() {
         return Err("drop requires <paths...>, --all, or -p".to_string());
     }
@@ -653,21 +701,27 @@ pub fn cmd_drop(repo: &RepoCtx, store: &LayerStore, opts: DropOpts<'_>) -> Resul
     }
 
     store.maybe_mirror_git_index(repo)?;
-    println!(
+    Ok(format!(
         "dropped changes from [L{}] {}",
         k + 1,
         store.manifest.layers[k]
-    );
+    ))
+}
+
+pub fn cmd_drop(repo: &RepoCtx, store: &LayerStore, opts: DropOpts<'_>) -> Result<(), String> {
+    let msg = op_drop(repo, store, opts)?;
+    println!("{msg}");
     Ok(())
 }
 
-pub fn cmd_commit(
+pub fn op_commit(
     repo: &RepoCtx,
     store: &mut LayerStore,
     paths: &[String],
     interactive: bool,
     git_args: &[String],
-) -> Result<(), String> {
+    captured: bool,
+) -> Result<String, String> {
     let trees = compute_trees(repo, store)?;
     let t0 = &trees[0];
     let t1 = &trees[1];
@@ -675,7 +729,16 @@ pub fn cmd_commit(
         .iter()
         .any(|a| a == "--allow-empty" || a == "--amend");
 
-    if paths.is_empty() && !interactive {
+    let run_commit = |idx: &std::path::Path| -> Result<String, String> {
+        if captured {
+            repo.commit_captured(idx, git_args)
+        } else {
+            repo.commit_interactive(idx, git_args)?;
+            Ok(String::new())
+        }
+    };
+
+    let output = if paths.is_empty() && !interactive {
         if t0 == t1 && !allow_empty {
             return Err(format!(
                 "nothing in [L1] {} to commit",
@@ -683,11 +746,11 @@ pub fn cmd_commit(
             ));
         }
         let l1_idx = store.idx_path(&store.manifest.layers[0]);
-        repo.commit_interactive(&l1_idx, git_args)?;
+        run_commit(&l1_idx)?
     } else {
         let tmp_idx = store.root.join("commit.tmp.idx");
         repo.read_tree(&tmp_idx, t0)?;
-        let res = (|| -> Result<(), String> {
+        let res = (|| -> Result<String, String> {
             if interactive {
                 repo.reset_patch_interactive(&tmp_idx, t1, paths)?;
             } else {
@@ -701,25 +764,48 @@ pub fn cmd_commit(
                     store.manifest.layers[0]
                 ));
             }
-            repo.commit_interactive(&tmp_idx, git_args)
+            run_commit(&tmp_idx)
         })();
         let _ = fs::remove_file(&tmp_idx);
-        res?;
-    }
+        res?
+    };
 
     store.manifest.base_head = repo.head_oid()?.unwrap_or_else(|| "UNBORN".to_string());
     store.save_manifest()?;
     store.maybe_mirror_git_index(repo)?;
+    Ok(output)
+}
+
+pub fn cmd_commit(
+    repo: &RepoCtx,
+    store: &mut LayerStore,
+    paths: &[String],
+    interactive: bool,
+    git_args: &[String],
+) -> Result<(), String> {
+    let _ = op_commit(repo, store, paths, interactive, git_args, false)?;
     Ok(())
 }
 
-pub fn cmd_layer_list(repo: &RepoCtx, store: &LayerStore) -> Result<(), String> {
+pub fn format_layer_list(repo: &RepoCtx, store: &LayerStore) -> Result<String, String> {
     let trees = compute_trees(repo, store)?;
+    let mut lines = Vec::with_capacity(store.manifest.layers.len());
     for (i, name) in store.manifest.layers.iter().enumerate() {
         let files = repo.diff_tree_names(&trees[i], &trees[i + 1], &[])?;
         let tag = if i == 0 { " (commit target)" } else { "" };
-        println!("L{}: {}{} [{} files]", i + 1, name, tag, files.len());
+        lines.push(format!(
+            "L{}: {}{} [{} files]",
+            i + 1,
+            name,
+            tag,
+            files.len()
+        ));
     }
+    Ok(lines.join("\n"))
+}
+
+pub fn cmd_layer_list(repo: &RepoCtx, store: &LayerStore) -> Result<(), String> {
+    println!("{}", format_layer_list(repo, store)?);
     Ok(())
 }
 
@@ -730,12 +816,12 @@ pub enum InsertPos {
     Below(String),
 }
 
-pub fn cmd_layer_add(
+pub fn op_layer_add(
     repo: &RepoCtx,
     store: &mut LayerStore,
     name: &str,
     pos: InsertPos,
-) -> Result<(), String> {
+) -> Result<String, String> {
     validate_layer_name(name)?;
     if store.manifest.layers.iter().any(|l| l == name) {
         return Err(format!("layer '{name}' already exists"));
@@ -764,7 +850,17 @@ pub fn cmd_layer_add(
     store.manifest.layers.insert(idx, name.to_string());
     store.save_manifest()?;
     store.maybe_mirror_git_index(repo)?;
-    println!("added layer [L{}] {name}", idx + 1);
+    Ok(format!("added layer [L{}] {name}", idx + 1))
+}
+
+pub fn cmd_layer_add(
+    repo: &RepoCtx,
+    store: &mut LayerStore,
+    name: &str,
+    pos: InsertPos,
+) -> Result<(), String> {
+    let msg = op_layer_add(repo, store, name, pos)?;
+    println!("{msg}");
     Ok(())
 }
 
@@ -776,12 +872,12 @@ pub enum RmMode {
     Drop,
 }
 
-pub fn cmd_layer_rm(
+pub fn op_layer_rm(
     repo: &RepoCtx,
     store: &mut LayerStore,
     spec: &str,
     mode: RmMode,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if store.manifest.layers.len() <= 1 {
         return Err("cannot remove the last remaining layer".to_string());
     }
@@ -800,10 +896,7 @@ pub fn cmd_layer_rm(
     store.snapshot_for_undo()?;
 
     match mode {
-        RmMode::RequireEmpty | RmMode::MergeUp => {
-            // Removing L_k leaves L_(k+1) intact; since L_(k+1) already includes L_k,
-            // L_(k+1) automatically absorbs Δ_k.
-        }
+        RmMode::RequireEmpty | RmMode::MergeUp => {}
         RmMode::MergeDown => {
             if k == 0 {
                 return Err(
@@ -830,16 +923,26 @@ pub fn cmd_layer_rm(
     store.manifest.layers.remove(k);
     store.save_manifest()?;
     store.maybe_mirror_git_index(repo)?;
-    println!("removed layer '{name}'");
+    Ok(format!("removed layer '{name}'"))
+}
+
+pub fn cmd_layer_rm(
+    repo: &RepoCtx,
+    store: &mut LayerStore,
+    spec: &str,
+    mode: RmMode,
+) -> Result<(), String> {
+    let msg = op_layer_rm(repo, store, spec, mode)?;
+    println!("{msg}");
     Ok(())
 }
 
-pub fn cmd_layer_rename(
+pub fn op_layer_rename(
     repo: &RepoCtx,
     store: &mut LayerStore,
     old_spec: &str,
     new_name: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     validate_layer_name(new_name)?;
     if store.manifest.layers.iter().any(|l| l == new_name) {
         return Err(format!("layer '{new_name}' already exists"));
@@ -852,8 +955,43 @@ pub fn cmd_layer_rename(
     store.manifest.layers[k] = new_name.to_string();
     store.save_manifest()?;
     store.maybe_mirror_git_index(repo)?;
-    println!("renamed layer '{old_name}' -> '{new_name}'");
+    Ok(format!("renamed layer '{old_name}' -> '{new_name}'"))
+}
+
+pub fn cmd_layer_rename(
+    repo: &RepoCtx,
+    store: &mut LayerStore,
+    old_spec: &str,
+    new_name: &str,
+) -> Result<(), String> {
+    let msg = op_layer_rename(repo, store, old_spec, new_name)?;
+    println!("{msg}");
     Ok(())
+}
+
+pub fn read_blob_bytes(
+    repo: &RepoCtx,
+    store: &LayerStore,
+    spec: &str,
+    rel_path: &str,
+    allow_missing: bool,
+) -> Result<Vec<u8>, String> {
+    if spec.eq_ignore_ascii_case("wt") {
+        let target = repo.work_tree.join(rel_path);
+        return match fs::read(&target) {
+            Ok(bytes) => Ok(bytes),
+            Err(_) if allow_missing => Ok(Vec::new()),
+            Err(e) => Err(format!("read WT '{rel_path}': {e}")),
+        };
+    }
+
+    let trees = compute_trees(repo, store)?;
+    let tree = resolve_tree_spec(store, &trees, spec)?;
+    match repo.read_blob_from_tree(tree, rel_path)? {
+        Some(bytes) => Ok(bytes),
+        None if allow_missing => Ok(Vec::new()),
+        None => Err(format!("path '{rel_path}' not found in '{spec}'")),
+    }
 }
 
 pub fn cmd_blob(
@@ -863,28 +1001,8 @@ pub fn cmd_blob(
     rel_path: &str,
     allow_missing: bool,
 ) -> Result<(), String> {
-    if spec.eq_ignore_ascii_case("wt") {
-        let target = repo.work_tree.join(rel_path);
-        match fs::read(&target) {
-            Ok(bytes) => {
-                io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
-                return Ok(());
-            }
-            Err(_) if allow_missing => return Ok(()),
-            Err(e) => return Err(format!("read WT '{rel_path}': {e}")),
-        }
-    }
-
-    let trees = compute_trees(repo, store)?;
-    let tree = resolve_tree_spec(store, &trees, spec)?;
-    match repo.read_blob_from_tree(tree, rel_path)? {
-        Some(bytes) => {
-            io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
-            Ok(())
-        }
-        None if allow_missing => Ok(()),
-        None => Err(format!("path '{rel_path}' not found in '{spec}'")),
-    }
+    let bytes = read_blob_bytes(repo, store, spec, rel_path, allow_missing)?;
+    io::stdout().write_all(&bytes).map_err(|e| e.to_string())
 }
 
 pub fn cmd_patch_apply(

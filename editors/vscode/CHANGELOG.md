@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+- Add built-in AI-agent instruction/skill generator (`gd agent init`) and role-scoped stdio MCP server (`gd mcp --role coder|reviewer|lead`)
+- Add `Agents` setup button & command (`Git Drafts: Setup Agent Instructions & MCP`) in VS Code
+
 ## 0.1.2
 
 - Auto-download prebuilt `gd` binary from GitHub Releases on first launch when not found on PATH (zero-step install across Linux, macOS, and Windows, including Remote-SSH)

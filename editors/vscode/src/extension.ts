@@ -507,6 +507,9 @@ class DraftsPipelineViewProvider implements vscode.WebviewViewProvider {
         case "refresh":
           void vscode.commands.executeCommand("gitDrafts.refresh");
           break;
+        case "setupAgents":
+          void vscode.commands.executeCommand("gitDrafts.setupAgents");
+          break;
       }
     });
     this.render();
@@ -592,6 +595,7 @@ class DraftsPipelineViewProvider implements vscode.WebviewViewProvider {
           <button class="btn small ${s.sync_git_index ? "active" : ""}" onclick="send('toggleSync')" title="Mirror [L1] ready to .git/index">
             Mirror: ${s.sync_git_index ? "ON" : "OFF"}
           </button>
+          <button class="btn small" onclick="send('setupAgents')" title="Setup AGENTS.md, SKILL.md, & MCP config">Agents</button>
           <button class="btn small" onclick="send('refresh')">↻</button>
         </div>
         <div class="head-bar">HEAD <code>${esc(s.base_head.slice(0, 7))}</code></div>
@@ -1246,6 +1250,55 @@ export function activate(context: vscode.ExtensionContext): void {
       wrap(async () => {
         await downloadPrebuiltGd();
         await ctrl.refresh();
+      })
+    ),
+    vscode.commands.registerCommand(
+      "gitDrafts.setupAgents",
+      wrap(async () => {
+        const rootDir = ctrl.getRoot();
+        if (!rootDir) {
+          throw new Error("Open a Git repository folder first.");
+        }
+        const target = await vscode.window.showQuickPick(
+          [
+            {
+              label: "Recommended (AGENTS.md + Skill + .vscode/mcp.json + existing configs)",
+              value: "auto,mcp",
+            },
+            {
+              label: "All Agent Files (AGENTS.md, CLAUDE.md, Cursor, Copilot, Gemini, Skill, MCP)",
+              value: "all",
+            },
+            {
+              label: "MCP Config Only (.vscode/mcp.json)",
+              value: "mcp",
+            },
+          ],
+          { placeHolder: "Choose AI-agent integration files to write" }
+        );
+        if (!target) {
+          return;
+        }
+        const role = await vscode.window.showQuickPick(
+          [
+            { label: "lead — full layered staging + commit access", value: "lead" },
+            { label: "coder — stage to top draft layer only (cannot promote/commit)", value: "coder" },
+            { label: "reviewer — inspect + promote/demote (cannot commit)", value: "reviewer" },
+          ],
+          { placeHolder: "Select MCP server role guardrail for .vscode/mcp.json" }
+        );
+        if (!role) {
+          return;
+        }
+        const out = await runGd(rootDir, [
+          "agent",
+          "init",
+          "--target",
+          target.value,
+          "--role",
+          role.value,
+        ]);
+        void vscode.window.showInformationMessage(`Git Drafts: ${out.trim()}`);
       })
     ),
     vscode.commands.registerCommand(

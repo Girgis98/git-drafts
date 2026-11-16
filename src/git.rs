@@ -524,6 +524,19 @@ impl RepoCtx {
         Ok(())
     }
 
+    pub fn commit_captured(
+        &self,
+        index_path: &Path,
+        extra_args: &[String],
+    ) -> Result<String, String> {
+        let mut c = self.git_cmd(Some(index_path));
+        c.arg("commit");
+        c.args(extra_args);
+        c.stdin(Stdio::null());
+        let out = self.run_checked(c, "git commit")?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     pub fn remove_untracked_files(&self, paths: &[String]) -> Result<(), String> {
         if paths.is_empty() {
             return Ok(());

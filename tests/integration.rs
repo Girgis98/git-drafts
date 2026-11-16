@@ -400,3 +400,115 @@ fn test_version_and_subdirectory_paths() {
     assert!(st.contains("[L1] ready (commit target) (0 files)"), "{st}");
     assert!(st.contains("top.txt"), "{st}");
 }
+
+#[test]
+fn test_agent_init_and_mcp_stdio_pipeline() {
+    let r = TempRepo::new();
+    r.write("app.rs", "fn main() {}\n");
+    r.git(&["add", "."]);
+    r.git(&["commit", "-m", "init"]);
+    r.gl_ok(&["init"]);
+
+    // Agent init --target all --role reviewer writes all agent configs idempotently
+    r.gl_ok(&["agent", "init", "--target", "all", "--role", "reviewer"]);
+    r.gl_ok(&["agent", "init", "--target", "all", "--role", "reviewer"]);
+    for rel in [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "GEMINI.md",
+        ".cursor/rules/git-drafts.mdc",
+        ".github/copilot-instructions.md",
+        ".agents/skills/git-drafts/SKILL.md",
+        ".vscode/mcp.json",
+    ] {
+        assert!(r.exists(rel), "missing {rel}");
+    }
+    let agents_md = r.read("AGENTS.md");
+    assert_eq!(agents_md.matches("<!-- git-drafts:start -->").count(), 1);
+    let mcp_json = r.read(".vscode/mcp.json");
+    assert!(mcp_json.contains("\"reviewer\""), "{mcp_json}");
+
+    // Snippet prints instruction block
+    let snip = r.gl_ok(&["agent", "snippet"]);
+    assert!(snip.contains("gd stage"), "{snip}");
+
+    // Modify app.rs and drive full Coder -> Reviewer -> Lead MCP stdio pipeline
+    r.write("app.rs", "fn main() { println!(\"ok\"); }\n");
+
+    let run_mcp = |role: &str, requests: &[&str]| -> String {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_gd"))
+            .current_dir(&r.dir)
+            .args(["mcp", "--role", role])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let mut stdin = child.stdin.take().unwrap();
+            for req in requests {
+                writeln!(stdin, "{req}").unwrap();
+            }
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "mcp {role} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    // 1) Coder stages into draft, blocked from promote & commit
+    let coder_out = run_mcp(
+        "coder",
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"draft_stage","arguments":{"paths":["app.rs"]}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"draft_promote","arguments":{"all":true}}}"#,
+        ],
+    );
+    assert!(coder_out.contains("staged into [L3] draft"), "{coder_out}");
+    assert!(
+        coder_out.contains("not permitted for role 'coder'"),
+        "{coder_out}"
+    );
+
+    // 2) Reviewer inspects & promotes draft -> reviewed, blocked from commit
+    let rev_out = run_mcp(
+        "reviewer",
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"draft_status","arguments":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"draft_promote","arguments":{"from":"draft","to":"reviewed","paths":["app.rs"]}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"draft_commit","arguments":{"message":"nope"}}}"#,
+        ],
+    );
+    assert!(
+        rev_out.contains("promoted [L3] draft -> [L2] reviewed"),
+        "{rev_out}"
+    );
+    assert!(
+        rev_out.contains("not permitted for role 'reviewer'"),
+        "{rev_out}"
+    );
+
+    // 3) Lead promotes reviewed -> ready and commits cleanly
+    let lead_out = run_mcp(
+        "lead",
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"draft_promote","arguments":{"from":"reviewed","to":"ready","paths":["app.rs"]}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"draft_commit","arguments":{"message":"feat: agent workflow"}}}"#,
+        ],
+    );
+    assert!(
+        lead_out.contains("promoted [L2] reviewed -> [L1] ready"),
+        "{lead_out}"
+    );
+    assert!(lead_out.contains("feat: agent workflow"), "{lead_out}");
+    let st_final = r.gl_ok(&["status"]);
+    assert!(
+        st_final.contains("[L1] ready (commit target) (0 files)"),
+        "{st_final}"
+    );
+}

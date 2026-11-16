@@ -193,6 +193,28 @@ gd layer rm security-check --merge-down   # or --merge-up / --drop
 
 ---
 
+## AI-Agent Workflow (`gd agent init` + Built-in MCP Server)
+
+Equip coding & review agents in any repo to use `git-drafts` automatically — **so agents stage into `draft`, reviewers promote to `reviewed`, and changes only commit after passing every gate**:
+
+### 1. Generate Repo Agent Instructions & Skill
+```bash
+gd agent init                 # writes AGENTS.md, .agents/skills/git-drafts/SKILL.md, & updates existing agent files
+gd agent init --target all    # also writes CLAUDE.md, GEMINI.md, Cursor .mdc, Copilot instructions, & .vscode/mcp.json
+```
+*(Or click **Agents** in the VS Code Draft Pipeline toolbar / run `Git Drafts: Setup Agent Instructions & MCP`.)*
+
+### 2. Run Role-Scoped Stdio MCP Server (`gd mcp`)
+Expose structured `draft_*` tools directly inside `gd` with built-in permission guardrails per agent role:
+
+| Role | Command | Allowed Capabilities |
+| :--- | :--- | :--- |
+| **Coder** | `gd mcp --role coder` | Inspect (`draft_status`, `draft_diff`, `draft_blob`), stage/drop in top `draft` layer only — **cannot promote or commit** |
+| **Reviewer** | `gd mcp --role reviewer` | Inspect + `draft_promote` / `draft_demote` / `draft_patch_apply` across layers — **cannot commit** |
+| **Lead** | `gd mcp --role lead` | Full pipeline including `draft_commit` and `draft_layer_manage` |
+
+---
+
 ## Command Reference
 
 | Command | Description |
@@ -209,6 +231,9 @@ gd layer rm security-check --merge-down   # or --merge-up / --drop
 | `gd blob <spec> <path> [--allow-missing]` | Print raw file bytes at a layer/`head`/`wt` |
 | `gd patch-apply --from A --to B` | Apply unified diff from stdin between layers |
 | `gd config sync-git-index [true\|false]` | Mirror `[L1] ready` into `.git/index` |
+| `gd agent init [--target T] [--role R]` | Generate `AGENTS.md`, `SKILL.md`, & MCP config |
+| `gd agent snippet` | Print concise agent instruction block |
+| `gd mcp [--role coder\|reviewer\|lead]` | Start stdio MCP server with role guardrails |
 | `gd undo` | Restore previous layer snapshot |
 
 ---
