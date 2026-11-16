@@ -22,6 +22,7 @@ impl TempRepo {
         repo.git(&["init"]);
         repo.git(&["config", "user.name", "Test User"]);
         repo.git(&["config", "user.email", "test@example.com"]);
+        repo.git(&["config", "core.autocrlf", "false"]);
         repo
     }
 

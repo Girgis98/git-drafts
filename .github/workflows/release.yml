@@ -60,7 +60,11 @@ jobs:
         with:
           files: editors/vscode/*.vsix
       - name: Publish to VS Code Marketplace (when VSCE_PAT secret is configured)
-        if: ${{ secrets.VSCE_PAT != '' }}
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx --yes @vscode/vsce publish --packagePath "git-drafts-${{ github.ref_name }}.vsix"
+        run: |
+          if [ -n "$VSCE_PAT" ]; then
+            npx --yes @vscode/vsce publish --packagePath "git-drafts-${{ github.ref_name }}.vsix"
+          else
+            echo "VSCE_PAT not set; skipping Marketplace publish"
+          fi
