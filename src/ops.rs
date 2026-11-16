@@ -67,19 +67,37 @@ pub fn compute_trees(repo: &RepoCtx, store: &LayerStore) -> Result<Vec<String>, 
     Ok(out)
 }
 
-pub fn cmd_status(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Result<(), String> {
-    let tty = is_tty();
-    if synced {
-        println!(
-            "{}",
-            c_dim("(HEAD moved externally; layers 3-way re-anchored)", tty)
-        );
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
     }
+    out.push('"');
+    out
+}
+
+struct StatusSnapshot {
+    trees: Vec<String>,
+    layer_diffs: Vec<Vec<(String, String)>>,
+    wt_modified: Vec<(String, String)>,
+    wt_untracked: Vec<String>,
+}
+
+fn collect_status(repo: &RepoCtx, store: &LayerStore) -> Result<StatusSnapshot, String> {
     let trees = compute_trees(repo, store)?;
     let n = store.manifest.layers.len();
     let top_idx = store.idx_path(&store.manifest.layers[n - 1]);
 
-    let (layer_diffs, wt_diff, untracked) = thread::scope(|s| {
+    let (layer_diffs_res, wt_diff, untracked) = thread::scope(|s| {
         let mut diff_handles = Vec::with_capacity(n);
         for i in 0..n {
             let ta = &trees[i];
@@ -98,8 +116,31 @@ pub fn cmd_status(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Result<()
         (diffs, wt, un)
     });
 
+    let mut layer_diffs = Vec::with_capacity(n);
+    for r in layer_diffs_res {
+        layer_diffs.push(r?);
+    }
+
+    Ok(StatusSnapshot {
+        trees,
+        layer_diffs,
+        wt_modified: wt_diff?,
+        wt_untracked: untracked?,
+    })
+}
+
+pub fn cmd_status(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Result<(), String> {
+    let tty = is_tty();
+    if synced {
+        println!(
+            "{}",
+            c_dim("(HEAD moved externally; layers 3-way re-anchored)", tty)
+        );
+    }
+    let snap = collect_status(repo, store)?;
+
     for (i, name) in store.manifest.layers.iter().enumerate() {
-        let files = layer_diffs[i].as_ref().map_err(|e| e.clone())?;
+        let files = &snap.layer_diffs[i];
         let tag = if i == 0 { " (commit target)" } else { "" };
         println!(
             "{} {}{} {}",
@@ -117,27 +158,85 @@ pub fn cmd_status(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Result<()
         }
     }
 
-    let wt_files = wt_diff?;
-    let untracked_files = untracked?;
     println!(
         "{} {} {}",
         c_bold("[WT]", tty),
         c_bold("working-tree", tty),
         c_dim(
-            &format!("({} modified, {} untracked)", wt_files.len(), untracked_files.len()),
+            &format!(
+                "({} modified, {} untracked)",
+                snap.wt_modified.len(),
+                snap.wt_untracked.len()
+            ),
             tty
         )
     );
-    if wt_files.is_empty() && untracked_files.is_empty() {
+    if snap.wt_modified.is_empty() && snap.wt_untracked.is_empty() {
         println!("  {}", c_dim("(clean)", tty));
     } else {
-        for (st, path) in &wt_files {
+        for (st, path) in &snap.wt_modified {
             println!("  {}  {}", c_status(st, tty), path);
         }
-        for path in &untracked_files {
+        for path in &snap.wt_untracked {
             println!("  {}  {}", c_status("?", tty), path);
         }
     }
+    Ok(())
+}
+
+pub fn cmd_status_json(repo: &RepoCtx, store: &LayerStore, synced: bool) -> Result<(), String> {
+    let snap = collect_status(repo, store)?;
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"base_head\":{},\"head_tree\":{},\"synced\":{},\"sync_git_index\":{},\"layers\":[",
+        json_escape(&store.manifest.base_head),
+        json_escape(&snap.trees[0]),
+        synced,
+        store.manifest.sync_git_index
+    ));
+    for (i, name) in store.manifest.layers.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"index\":{},\"name\":{},\"tree\":{},\"files\":[",
+            i + 1,
+            json_escape(name),
+            json_escape(&snap.trees[i + 1])
+        ));
+        for (j, (st, path)) in snap.layer_diffs[i].iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"status\":{},\"path\":{}}}",
+                json_escape(st),
+                json_escape(path)
+            ));
+        }
+        out.push_str("]}");
+    }
+    out.push_str("],\"wt\":{\"modified\":[");
+    for (i, (st, path)) in snap.wt_modified.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"status\":{},\"path\":{}}}",
+            json_escape(st),
+            json_escape(path)
+        ));
+    }
+    out.push_str("],\"untracked\":[");
+    for (i, path) in snap.wt_untracked.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_escape(path));
+    }
+    out.push_str("]}}");
+    println!("{out}");
     Ok(())
 }
 
@@ -261,6 +360,7 @@ pub fn cmd_stage(
             repo.add_paths(&store.idx_path(&store.manifest.layers[k]), paths, all)?;
         }
     }
+    store.maybe_mirror_git_index(repo)?;
     println!(
         "staged into [L{}] {}",
         target + 1,
@@ -355,6 +455,7 @@ pub fn cmd_promote(
         }
     }
 
+    store.maybe_mirror_git_index(repo)?;
     println!(
         "promoted [L{}] {} -> [L{}] {}",
         src + 1,
@@ -430,6 +531,7 @@ pub fn cmd_demote(
         }
     }
 
+    store.maybe_mirror_git_index(repo)?;
     let dst_label = if dst == n {
         "[WT] working-tree".to_string()
     } else {
@@ -493,6 +595,7 @@ pub fn cmd_drop(
         }
     }
 
+    store.maybe_mirror_git_index(repo)?;
     println!("dropped changes from [L{}] {}", k + 1, store.manifest.layers[k]);
     Ok(())
 }
@@ -545,6 +648,7 @@ pub fn cmd_commit(
 
     store.manifest.base_head = repo.head_oid()?.unwrap_or_else(|| "UNBORN".to_string());
     store.save_manifest()?;
+    store.maybe_mirror_git_index(repo)?;
     Ok(())
 }
 
@@ -598,6 +702,7 @@ pub fn cmd_layer_add(
     repo.read_tree(&store.idx_path(name), &src_tree)?;
     store.manifest.layers.insert(idx, name.to_string());
     store.save_manifest()?;
+    store.maybe_mirror_git_index(repo)?;
     println!("added layer [L{}] {name}", idx + 1);
     Ok(())
 }
@@ -656,11 +761,13 @@ pub fn cmd_layer_rm(
     let _ = fs::remove_file(store.idx_path(&name));
     store.manifest.layers.remove(k);
     store.save_manifest()?;
+    store.maybe_mirror_git_index(repo)?;
     println!("removed layer '{name}'");
     Ok(())
 }
 
 pub fn cmd_layer_rename(
+    repo: &RepoCtx,
     store: &mut LayerStore,
     old_spec: &str,
     new_name: &str,
@@ -676,6 +783,123 @@ pub fn cmd_layer_rename(
         .map_err(|e| format!("rename index: {e}"))?;
     store.manifest.layers[k] = new_name.to_string();
     store.save_manifest()?;
+    store.maybe_mirror_git_index(repo)?;
     println!("renamed layer '{old_name}' -> '{new_name}'");
     Ok(())
+}
+
+pub fn cmd_blob(
+    repo: &RepoCtx,
+    store: &LayerStore,
+    spec: &str,
+    rel_path: &str,
+    allow_missing: bool,
+) -> Result<(), String> {
+    if spec.eq_ignore_ascii_case("wt") {
+        let target = repo.work_tree.join(rel_path);
+        match fs::read(&target) {
+            Ok(bytes) => {
+                io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+            Err(_) if allow_missing => return Ok(()),
+            Err(e) => return Err(format!("read WT '{rel_path}': {e}")),
+        }
+    }
+
+    let trees = compute_trees(repo, store)?;
+    let tree = resolve_tree_spec(store, &trees, spec)?;
+    match repo.read_blob_from_tree(tree, rel_path)? {
+        Some(bytes) => {
+            io::stdout().write_all(&bytes).map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None if allow_missing => Ok(()),
+        None => Err(format!("path '{rel_path}' not found in '{spec}'")),
+    }
+}
+
+pub fn cmd_patch_apply(
+    repo: &RepoCtx,
+    store: &LayerStore,
+    from: &str,
+    to: &str,
+    patch: &[u8],
+) -> Result<(), String> {
+    if patch.is_empty() {
+        return Ok(());
+    }
+    let n = store.manifest.layers.len();
+    let from_pos: isize = if from.eq_ignore_ascii_case("wt") {
+        n as isize
+    } else if from.eq_ignore_ascii_case("head") {
+        -1
+    } else {
+        store.resolve_layer(from)? as isize
+    };
+    let to_pos: isize = if to.eq_ignore_ascii_case("wt") {
+        n as isize
+    } else if to.eq_ignore_ascii_case("head") {
+        -1
+    } else {
+        store.resolve_layer(to)? as isize
+    };
+
+    if from_pos == to_pos {
+        return Err("patch-apply requires distinct --from and --to".to_string());
+    }
+    if to_pos < 0 {
+        return Err("cannot apply patches directly to HEAD; target a layer then commit".to_string());
+    }
+
+    store.snapshot_for_undo()?;
+    if from_pos > to_pos {
+        // Promoting / staging patch downward from higher state into to_pos..(from_pos - 1)
+        let start = to_pos as usize;
+        let end = (from_pos as usize).min(n);
+        for k in start..end {
+            repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), patch, true, false)?;
+        }
+    } else {
+        // Demoting / dropping patch upward from lower layer: reverse-apply on from_pos..(to_pos - 1)
+        if from_pos < 0 {
+            return Err("cannot demote from HEAD".to_string());
+        }
+        let start = from_pos as usize;
+        let end = (to_pos as usize).min(n);
+        for k in start..end {
+            repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), patch, true, true)?;
+        }
+    }
+    store.maybe_mirror_git_index(repo)?;
+    Ok(())
+}
+
+pub fn cmd_config(
+    repo: &RepoCtx,
+    store: &mut LayerStore,
+    key: &str,
+    val: Option<&str>,
+) -> Result<(), String> {
+    match key {
+        "sync-git-index" => {
+            if let Some(v) = val {
+                let b = match v {
+                    "true" | "1" | "yes" | "on" => true,
+                    "false" | "0" | "no" | "off" => false,
+                    _ => return Err(format!("invalid boolean '{v}' (expected true|false)")),
+                };
+                store.manifest.sync_git_index = b;
+                store.save_manifest()?;
+                store.maybe_mirror_git_index(repo)?;
+                println!("sync-git-index={b}");
+            } else {
+                println!("{}", store.manifest.sync_git_index);
+            }
+            Ok(())
+        }
+        _ => Err(format!(
+            "unknown config key '{key}' (available: sync-git-index)"
+        )),
+    }
 }

@@ -9,6 +9,7 @@ const MAX_UNDO: usize = 15;
 pub struct Manifest {
     pub base_head: String,
     pub layers: Vec<String>,
+    pub sync_git_index: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +63,15 @@ impl LayerStore {
     }
 
     pub fn init(repo: &RepoCtx, names: &[String], force: bool) -> Result<Self, String> {
+        Self::init_with_opts(repo, names, force, false)
+    }
+
+    pub fn init_with_opts(
+        repo: &RepoCtx,
+        names: &[String],
+        force: bool,
+        sync_git_index: bool,
+    ) -> Result<Self, String> {
         let root = Self::layers_root(repo);
         if root.join("manifest").exists() && !force {
             return Err("layers already initialized (use --force to reinitialize)".to_string());
@@ -94,24 +104,21 @@ impl LayerStore {
             manifest: Manifest {
                 base_head: head,
                 layers: layers.clone(),
+                sync_git_index,
             },
         };
         for l in &layers {
             repo.read_tree(&store.idx_path(l), &base_tree)?;
         }
         store.save_manifest()?;
+        store.maybe_mirror_git_index(repo)?;
         Ok(store)
     }
 
-    pub fn load(repo: &RepoCtx) -> Result<Self, String> {
-        let root = Self::layers_root(repo);
-        let mpath = root.join("manifest");
-        if !mpath.exists() {
-            return Err("draft layers not initialized; run `gd init` first".to_string());
-        }
-        let raw = fs::read_to_string(&mpath).map_err(|e| format!("read manifest: {e}"))?;
+    fn parse_manifest(raw: &str) -> Result<Manifest, String> {
         let mut base_head = None;
         let mut layers = Vec::new();
+        let mut sync_git_index = false;
         for line in raw.lines() {
             if let Some(v) = line.strip_prefix("base_head=") {
                 base_head = Some(v.trim().to_string());
@@ -121,16 +128,30 @@ impl LayerStore {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+            } else if let Some(v) = line.strip_prefix("sync_git_index=") {
+                sync_git_index = v.trim() == "true";
             }
         }
         let base_head = base_head.ok_or("corrupt manifest: missing base_head")?;
         if layers.is_empty() {
             return Err("corrupt manifest: no layers defined".to_string());
         }
-        Ok(Self {
-            root,
-            manifest: Manifest { base_head, layers },
+        Ok(Manifest {
+            base_head,
+            layers,
+            sync_git_index,
         })
+    }
+
+    pub fn load(repo: &RepoCtx) -> Result<Self, String> {
+        let root = Self::layers_root(repo);
+        let mpath = root.join("manifest");
+        if !mpath.exists() {
+            return Err("draft layers not initialized; run `gd init` first".to_string());
+        }
+        let raw = fs::read_to_string(&mpath).map_err(|e| format!("read manifest: {e}"))?;
+        let manifest = Self::parse_manifest(&raw)?;
+        Ok(Self { root, manifest })
     }
 
     pub fn load_and_sync(repo: &RepoCtx) -> Result<(Self, bool), String> {
@@ -158,14 +179,24 @@ impl LayerStore {
         }
         self.manifest.base_head = current;
         self.save_manifest()?;
+        self.maybe_mirror_git_index(repo)?;
         Ok(true)
+    }
+
+    pub fn maybe_mirror_git_index(&self, repo: &RepoCtx) -> Result<(), String> {
+        if self.manifest.sync_git_index {
+            let l1 = self.idx_path(&self.manifest.layers[0]);
+            repo.mirror_index_to_default(&l1)?;
+        }
+        Ok(())
     }
 
     pub fn save_manifest(&self) -> Result<(), String> {
         let content = format!(
-            "version=1\nbase_head={}\nlayers={}\n",
+            "version=1\nbase_head={}\nlayers={}\nsync_git_index={}\n",
             self.manifest.base_head,
-            self.manifest.layers.join(",")
+            self.manifest.layers.join(","),
+            self.manifest.sync_git_index
         );
         let tmp = self.root.join("manifest.tmp");
         fs::write(&tmp, content).map_err(|e| format!("write manifest: {e}"))?;
@@ -228,22 +259,9 @@ impl LayerStore {
         let snap = undo.join(format!("{latest:06}"));
         let snap_manifest = fs::read_to_string(snap.join("manifest"))
             .map_err(|e| format!("read undo manifest: {e}"))?;
-        let mut snap_head = None;
-        let mut snap_layers = Vec::new();
-        for line in snap_manifest.lines() {
-            if let Some(v) = line.strip_prefix("base_head=") {
-                snap_head = Some(v.trim().to_string());
-            } else if let Some(v) = line.strip_prefix("layers=") {
-                snap_layers = v
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-        }
-        let snap_head = snap_head.ok_or("corrupt undo snapshot")?;
+        let snap_parsed = Self::parse_manifest(&snap_manifest)?;
         let current_head = repo.head_oid()?.unwrap_or_else(|| "UNBORN".to_string());
-        if snap_head != current_head {
+        if snap_parsed.base_head != current_head {
             return Err(
                 "cannot undo across a git commit/checkout (HEAD changed since snapshot)"
                     .to_string(),
@@ -258,16 +276,16 @@ impl LayerStore {
                 let _ = fs::remove_file(entry.path());
             }
         }
-        for l in &snap_layers {
+        for l in &snap_parsed.layers {
             let src = snap.join("idx").join(l);
             if src.exists() {
                 fs::copy(&src, cur_idx.join(l))
                     .map_err(|e| format!("restore idx {l}: {e}"))?;
             }
         }
-        self.manifest.base_head = snap_head;
-        self.manifest.layers = snap_layers;
+        self.manifest = snap_parsed;
         self.save_manifest()?;
+        self.maybe_mirror_git_index(repo)?;
         fs::remove_dir_all(&snap).map_err(|e| format!("cleanup undo snap: {e}"))?;
         Ok(())
     }

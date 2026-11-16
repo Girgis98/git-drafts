@@ -444,6 +444,32 @@ impl RepoCtx {
         self.run_checked(c, "git clean")?;
         Ok(())
     }
+
+    pub fn read_blob_from_tree(
+        &self,
+        tree_oid: &str,
+        rel_path: &str,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let norm = rel_path.replace('\\', "/");
+        let spec = format!("{tree_oid}:{norm}");
+        let out = self
+            .git_cmd(None)
+            .args(["cat-file", "-p", &spec])
+            .output()
+            .map_err(|e| format!("git cat-file: {e}"))?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(out.stdout))
+    }
+
+    pub fn mirror_index_to_default(&self, src_idx: &Path) -> Result<(), String> {
+        let dst = self.git_dir.join("index");
+        let tmp = self.git_dir.join("index.drafts.tmp");
+        std::fs::copy(src_idx, &tmp).map_err(|e| format!("copy index mirror: {e}"))?;
+        std::fs::rename(&tmp, &dst).map_err(|e| format!("replace .git/index: {e}"))?;
+        Ok(())
+    }
 }
 
 fn parse_z_name_status(raw: &[u8]) -> Vec<(String, String)> {

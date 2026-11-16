@@ -5,6 +5,7 @@ pub mod store;
 use git::RepoCtx;
 use ops::{InsertPos, RmMode};
 use std::env;
+use std::io::Read;
 use store::LayerStore;
 
 fn print_help() {
@@ -13,8 +14,9 @@ fn print_help() {
 git-drafts (gd) - multi-phase layered staging areas for Git
 
 USAGE:
-  gd init [--force] [layers...]            Initialize draft layers (default: ready reviewed draft)
-  gd status | st                           Show layered status (L1..Ln + WT)
+  gd init [--force] [--sync-git-index] [layers...]
+                                           Initialize draft layers (default: ready reviewed draft)
+  gd status | st [--json]                  Show layered status (L1..Ln + WT)
   gd diff [<layer>|wt] [--from A --to B] [-- <paths...>]
                                            Show diff of a layer or between two states
   gd stage [-l <layer>] [-p|-A] [<paths...>]
@@ -33,6 +35,10 @@ USAGE:
   gd layer rm <name> [--merge-up|--merge-down|--drop]
                                            Remove a layer
   gd layer rename <old> <new>              Rename a layer
+  gd blob <layer|head|wt> <path> [--allow-missing]
+                                           Output file bytes at a layer (for IDE diff providers)
+  gd patch-apply --from <src> --to <dst>   Apply unified patch from stdin between layers
+  gd config <key> [<value>]                Get or set repo draft config (sync-git-index)
   gd undo                                  Restore previous layer state
 "
     );
@@ -60,25 +66,38 @@ pub fn run() -> Result<(), String> {
     match cmd {
         "init" => {
             let mut force = false;
+            let mut sync_git_index = false;
             let mut names = Vec::new();
             for a in rest {
                 match a.as_str() {
                     "-f" | "--force" => force = true,
+                    "--sync-git-index" => sync_git_index = true,
                     "-h" | "--help" => {
-                        println!("USAGE: gd init [--force] [layer1 layer2 ...]");
+                        println!("USAGE: gd init [--force] [--sync-git-index] [layer1 layer2 ...]");
                         return Ok(());
                     }
                     s if s.starts_with('-') => return Err(format!("unknown flag '{s}'")),
                     _ => names.push(a.clone()),
                 }
             }
-            let store = LayerStore::init(&repo, &names, force)?;
+            let store = LayerStore::init_with_opts(&repo, &names, force, sync_git_index)?;
             println!("initialized layers: {}", store.manifest.layers.join(" < "));
             Ok(())
         }
         "status" | "st" => {
+            let mut json = false;
+            for a in rest {
+                match a.as_str() {
+                    "--json" => json = true,
+                    s => return Err(format!("unknown argument '{s}'")),
+                }
+            }
             let (store, synced) = LayerStore::load_and_sync(&repo)?;
-            ops::cmd_status(&repo, &store, synced)
+            if json {
+                ops::cmd_status_json(&repo, &store, synced)
+            } else {
+                ops::cmd_status(&repo, &store, synced)
+            }
         }
         "diff" => {
             let (store, _) = LayerStore::load_and_sync(&repo)?;
@@ -383,10 +402,60 @@ pub fn run() -> Result<(), String> {
                     if sub_rest.len() != 2 {
                         return Err("USAGE: gd layer rename <old> <new>".to_string());
                     }
-                    ops::cmd_layer_rename(&mut store, &sub_rest[0], &sub_rest[1])
+                    ops::cmd_layer_rename(&repo, &mut store, &sub_rest[0], &sub_rest[1])
                 }
                 other => Err(format!("unknown layer subcommand '{other}'")),
             }
+        }
+        "blob" => {
+            let (store, _) = LayerStore::load_and_sync(&repo)?;
+            let mut allow_missing = false;
+            let mut pos = Vec::new();
+            for a in rest {
+                match a.as_str() {
+                    "--allow-missing" => allow_missing = true,
+                    s if s.starts_with('-') => return Err(format!("unknown flag '{s}'")),
+                    s => pos.push(s.to_string()),
+                }
+            }
+            if pos.len() != 2 {
+                return Err("USAGE: gd blob <layer|head|wt> <path> [--allow-missing]".to_string());
+            }
+            ops::cmd_blob(&repo, &store, &pos[0], &pos[1], allow_missing)
+        }
+        "patch-apply" => {
+            let (store, _) = LayerStore::load_and_sync(&repo)?;
+            let mut from: Option<String> = None;
+            let mut to: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--from" => {
+                        i += 1;
+                        from = Some(rest.get(i).ok_or("--from requires a value")?.clone());
+                    }
+                    "--to" => {
+                        i += 1;
+                        to = Some(rest.get(i).ok_or("--to requires a value")?.clone());
+                    }
+                    s => return Err(format!("unknown argument '{s}'")),
+                }
+                i += 1;
+            }
+            let from = from.ok_or("patch-apply requires --from <src>")?;
+            let to = to.ok_or("patch-apply requires --to <dst>")?;
+            let mut patch = Vec::new();
+            std::io::stdin()
+                .read_to_end(&mut patch)
+                .map_err(|e| format!("read patch stdin: {e}"))?;
+            ops::cmd_patch_apply(&repo, &store, &from, &to, &patch)
+        }
+        "config" => {
+            let (mut store, _) = LayerStore::load_and_sync(&repo)?;
+            if rest.is_empty() || rest.len() > 2 {
+                return Err("USAGE: gd config <key> [<value>]".to_string());
+            }
+            ops::cmd_config(&repo, &mut store, &rest[0], rest.get(1).map(String::as_str))
         }
         "undo" => {
             let mut store = LayerStore::load(&repo)?;

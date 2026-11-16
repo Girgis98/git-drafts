@@ -262,3 +262,44 @@ fn test_interactive_patch_promote_and_commit() {
     assert!(diff_ready_after.is_empty(), "{diff_ready_after}");
     assert!(diff_draft_after.contains("CHANGED B"), "{diff_draft_after}");
 }
+
+#[test]
+fn test_ide_json_blob_patch_apply_and_sync_git_index() {
+    let r = TempRepo::new();
+    r.write("app.txt", "one\ntwo\n");
+    r.git(&["add", "app.txt"]);
+    r.git(&["commit", "-m", "init"]);
+
+    r.gl_ok(&["init", "--sync-git-index"]);
+    r.write("app.txt", "one\ntwo modified\n");
+    r.gl_ok(&["stage", "app.txt"]);
+
+    // JSON status check
+    let json = r.gl_ok(&["status", "--json"]);
+    assert!(json.contains("\"sync_git_index\":true"), "{json}");
+    assert!(json.contains("\"name\":\"draft\""), "{json}");
+    assert!(json.contains("\"path\":\"app.txt\""), "{json}");
+
+    // Blob checks
+    assert_eq!(r.gl_ok(&["blob", "head", "app.txt"]), "one\ntwo\n");
+    assert_eq!(r.gl_ok(&["blob", "draft", "app.txt"]), "one\ntwo modified\n");
+    assert_eq!(r.gl_ok(&["blob", "head", "missing.txt", "--allow-missing"]), "");
+
+    // Non-interactive patch-apply from draft -> ready
+    let patch = r.gl_ok(&["diff", "draft"]);
+    r.gl_stdin_ok(&["patch-apply", "--from", "draft", "--to", "ready"], &patch);
+
+    // Native git index should mirror L1 (ready)!
+    let native_staged = String::from_utf8_lossy(&r.git(&["diff", "--cached", "--name-only"]).stdout).to_string();
+    assert_eq!(native_staged.trim(), "app.txt");
+
+    // Non-interactive patch-apply demote ready -> reviewed
+    r.gl_stdin_ok(&["patch-apply", "--from", "ready", "--to", "reviewed"], &patch);
+    let native_staged_after = String::from_utf8_lossy(&r.git(&["diff", "--cached", "--name-only"]).stdout).to_string();
+    assert!(native_staged_after.trim().is_empty(), "{native_staged_after}");
+
+    // Toggle config off
+    r.gl_ok(&["config", "sync-git-index", "false"]);
+    let json2 = r.gl_ok(&["status", "--json"]);
+    assert!(json2.contains("\"sync_git_index\":false"), "{json2}");
+}

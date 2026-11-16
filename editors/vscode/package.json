@@ -1,0 +1,74 @@
+{
+  "name": "git-drafts",
+  "displayName": "Git Drafts",
+  "description": "Multi-phase layered staging areas for Git — safe experimentation with AI agents",
+  "version": "0.1.0",
+  "publisher": "girgis98",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "activationEvents": [
+    "workspaceContains:.git"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "Git Drafts",
+      "properties": {
+        "gitDrafts.executablePath": {
+          "type": "string",
+          "default": "gd",
+          "description": "Path to the gd (git-drafts) binary"
+        }
+      }
+    },
+    "commands": [
+      { "command": "gitDrafts.init", "title": "Git Drafts: Initialize Draft Layers", "icon": "$(layers)" },
+      { "command": "gitDrafts.refresh", "title": "Refresh", "icon": "$(refresh)" },
+      { "command": "gitDrafts.stage", "title": "Stage to Draft", "icon": "$(plus)" },
+      { "command": "gitDrafts.promote", "title": "Promote Layer", "icon": "$(arrow-down)" },
+      { "command": "gitDrafts.demote", "title": "Demote Layer", "icon": "$(arrow-up)" },
+      { "command": "gitDrafts.drop", "title": "Drop from Layer", "icon": "$(trash)" },
+      { "command": "gitDrafts.commitReady", "title": "Commit Ready Layer", "icon": "$(check)" },
+      { "command": "gitDrafts.commitFile", "title": "Commit File from Ready", "icon": "$(check)" },
+      { "command": "gitDrafts.layerAdd", "title": "Add Draft Layer", "icon": "$(add)" },
+      { "command": "gitDrafts.undo", "title": "Undo Layer Op", "icon": "$(discard)" },
+      { "command": "gitDrafts.toggleSyncGitIndex", "title": "Toggle .git/index Mirror", "icon": "$(sync)" },
+      { "command": "gitDrafts.openDiff", "title": "Open Layer Diff" }
+    ],
+    "menus": {
+      "scm/title": [
+        { "command": "gitDrafts.commitReady", "when": "scmProvider == git-drafts", "group": "navigation" },
+        { "command": "gitDrafts.refresh", "when": "scmProvider == git-drafts", "group": "navigation" },
+        { "command": "gitDrafts.undo", "when": "scmProvider == git-drafts", "group": "navigation" },
+        { "command": "gitDrafts.layerAdd", "when": "scmProvider == git-drafts", "group": "1_manage" },
+        { "command": "gitDrafts.toggleSyncGitIndex", "when": "scmProvider == git-drafts", "group": "1_manage" },
+        { "command": "gitDrafts.init", "when": "scmProvider == git-drafts", "group": "1_manage" }
+      ],
+      "scm/resourceGroup/context": [
+        { "command": "gitDrafts.stage", "when": "scmProvider == git-drafts && scmResourceGroup == wt", "group": "inline" },
+        { "command": "gitDrafts.promote", "when": "scmProvider == git-drafts && scmResourceGroup =~ /^layer:[1-9]/", "group": "inline" },
+        { "command": "gitDrafts.demote", "when": "scmProvider == git-drafts && scmResourceGroup =~ /^layer:/", "group": "inline" }
+      ],
+      "scm/resourceState/context": [
+        { "command": "gitDrafts.stage", "when": "scmProvider == git-drafts && scmResourceGroup == wt", "group": "inline" },
+        { "command": "gitDrafts.commitFile", "when": "scmProvider == git-drafts && scmResourceGroup == layer:0", "group": "inline" },
+        { "command": "gitDrafts.promote", "when": "scmProvider == git-drafts && scmResourceGroup =~ /^layer:[1-9]/", "group": "inline" },
+        { "command": "gitDrafts.demote", "when": "scmProvider == git-drafts && scmResourceGroup =~ /^layer:/", "group": "inline" },
+        { "command": "gitDrafts.drop", "when": "scmProvider == git-drafts && scmResourceGroup =~ /^layer:/", "group": "1_drop" }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.3.3"
+  }
+}
