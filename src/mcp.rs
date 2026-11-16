@@ -40,6 +40,7 @@ impl AgentRole {
                 "draft_status"
                     | "draft_diff"
                     | "draft_blob"
+                    | "draft_stage"
                     | "draft_promote"
                     | "draft_demote"
                     | "draft_drop"
@@ -62,13 +63,13 @@ impl AgentRole {
     fn instructions(self) -> &'static str {
         match self {
             Self::Coder => {
-                "Role: CODER. Inspect with draft_status/draft_diff and stage edits into the top draft layer only via draft_stage. You cannot promote or commit."
+                "Role: CODER. 1) Inspect via draft_status/draft_diff. 2) Stage edits into the top 'draft' layer only via draft_stage (or unstage to WT via draft_demote). Promote and commit are blocked."
             }
             Self::Reviewer => {
-                "Role: REVIEWER. Inspect drafts via draft_status/draft_diff, promote vetted files/hunks via draft_promote/draft_patch_apply, or push back via draft_demote/draft_drop. You cannot commit."
+                "Role: REVIEWER. 1) Inspect drafts via draft_status/draft_diff/draft_blob. 2) Stage review fixes into top 'draft' layer via draft_stage. 3) Promote vetted files/hunks via draft_promote/draft_patch_apply, or push back via draft_demote/draft_drop. Commit is blocked."
             }
             Self::Lead => {
-                "Role: LEAD. Full layered staging access (init, stage, promote, demote, drop, patch_apply, layer management, and draft_commit)."
+                "Role: LEAD. Full layered staging access: init, stage, promote toward [L1] ready, demote, drop, patch_apply, manage layers, and commit verified work via draft_commit."
             }
         }
     }
@@ -277,7 +278,12 @@ fn call_tool(role: AgentRole, name: &str, args: &Json) -> Result<String, String>
             let to = args.get_str("to");
             let paths = args.get_string_vec("paths")?;
             let bytes = ops::build_diff_bytes(&repo, &store, layer, from, to, &paths, false)?;
-            Ok(String::from_utf8_lossy(&bytes).to_string())
+            let text = String::from_utf8_lossy(&bytes).to_string();
+            if text.trim().is_empty() {
+                Ok("(no differences)".to_string())
+            } else {
+                Ok(text)
+            }
         }
         "draft_blob" => {
             let (store, _) = LayerStore::load_and_sync(&repo)?;
@@ -290,12 +296,13 @@ fn call_tool(role: AgentRole, name: &str, args: &Json) -> Result<String, String>
         "draft_stage" => {
             let (store, _) = LayerStore::load_and_sync(&repo)?;
             let requested_layer = args.get_str("layer");
-            if role == AgentRole::Coder {
+            if role != AgentRole::Lead {
                 if let Some(l) = requested_layer {
                     let top = store.manifest.layers.last().map(String::as_str);
                     if Some(l) != top && l != format!("L{}", store.manifest.layers.len()) {
                         return Err(format!(
-                            "coder role may only stage into top layer '{}'",
+                            "{} role may only stage directly into top layer '{}' (use draft_promote to move changes toward ready)",
+                            role.as_str(),
                             top.unwrap_or("draft")
                         ));
                     }
@@ -473,7 +480,14 @@ fn schema_str_array(desc: &str) -> Json {
     ])
 }
 
-fn tool_def(name: &str, desc: &str, props: Vec<(&str, Json)>, required: Vec<&str>) -> Json {
+fn tool_def(
+    name: &str,
+    desc: &str,
+    read_only: bool,
+    destructive: bool,
+    props: Vec<(&str, Json)>,
+    required: Vec<&str>,
+) -> Json {
     let mut all_props = vec![(
         "repo_path",
         schema_prop("string", "Optional repository path (defaults to cwd)"),
@@ -486,6 +500,14 @@ fn tool_def(name: &str, desc: &str, props: Vec<(&str, Json)>, required: Vec<&str
     Json::obj(vec![
         ("name", Json::Str(name.to_string())),
         ("description", Json::Str(desc.to_string())),
+        (
+            "annotations",
+            Json::obj(vec![
+                ("readOnlyHint", Json::Bool(read_only)),
+                ("destructiveHint", Json::Bool(destructive)),
+                ("idempotentHint", Json::Bool(read_only)),
+            ]),
+        ),
         (
             "inputSchema",
             Json::obj(vec![
@@ -502,6 +524,8 @@ fn tool_list_json(role: AgentRole) -> Json {
         tool_def(
             "draft_init",
             "Initialize layered staging phases in a Git repository.",
+            false,
+            false,
             vec![
                 ("layers", schema_str_array("Ordered layers (default: ready, reviewed, draft)")),
                 ("force", schema_prop("boolean", "Reinitialize if already initialized")),
@@ -512,12 +536,16 @@ fn tool_list_json(role: AgentRole) -> Json {
         tool_def(
             "draft_status",
             "Get JSON status of all revision layers, tree OIDs, and working tree changes.",
+            true,
+            false,
             vec![],
             vec![],
         ),
         tool_def(
             "draft_diff",
             "Inspect unified diff for a specific layer, working tree ('wt'), or between --from and --to.",
+            true,
+            false,
             vec![
                 ("layer", schema_prop("string", "Layer name/index or 'wt'")),
                 ("from", schema_prop("string", "Source spec ('head' or layer)")),
@@ -529,6 +557,8 @@ fn tool_list_json(role: AgentRole) -> Json {
         tool_def(
             "draft_blob",
             "Read raw file content from 'head', 'wt', or any draft layer.",
+            true,
+            false,
             vec![
                 ("spec", schema_prop("string", "Layer name, 'head', or 'wt'")),
                 ("path", schema_prop("string", "Repository-relative file path")),
@@ -538,7 +568,9 @@ fn tool_list_json(role: AgentRole) -> Json {
         ),
         tool_def(
             "draft_stage",
-            "Stage working-tree edits into a draft layer (defaults to top layer; coder role restricted to top layer).",
+            "Stage working-tree edits into a draft layer (defaults to top layer; non-lead roles restricted to top layer).",
+            false,
+            false,
             vec![
                 ("layer", schema_prop("string", "Target layer (defaults to top)")),
                 ("paths", schema_str_array("File paths to stage")),
@@ -548,7 +580,9 @@ fn tool_list_json(role: AgentRole) -> Json {
         ),
         tool_def(
             "draft_promote",
-            "Promote verified files downward toward commit-ready L1.",
+            "Promote verified files toward commit-ready [L1] ready.",
+            false,
+            false,
             vec![
                 ("from", schema_prop("string", "Source layer")),
                 ("to", schema_prop("string", "Target layer (defaults to one closer to HEAD)")),
@@ -559,7 +593,9 @@ fn tool_list_json(role: AgentRole) -> Json {
         ),
         tool_def(
             "draft_demote",
-            "Push changes upward away from commit (toward draft or working tree).",
+            "Push changes back away from commit (toward draft or working tree).",
+            false,
+            false,
             vec![
                 ("from", schema_prop("string", "Source layer")),
                 ("to", schema_prop("string", "Target layer or 'wt'")),
@@ -571,6 +607,8 @@ fn tool_list_json(role: AgentRole) -> Json {
         tool_def(
             "draft_drop",
             "Discard changes from a layer.",
+            false,
+            true,
             vec![
                 ("layer", schema_prop("string", "Target layer")),
                 ("paths", schema_str_array("File paths to drop")),
@@ -583,6 +621,8 @@ fn tool_list_json(role: AgentRole) -> Json {
         tool_def(
             "draft_patch_apply",
             "Apply a unified diff patch between two layers (for non-interactive hunk promotion/demotion).",
+            false,
+            false,
             vec![
                 ("from", schema_prop("string", "Source layer or 'wt'")),
                 ("to", schema_prop("string", "Target layer or 'wt'")),
@@ -592,7 +632,9 @@ fn tool_list_json(role: AgentRole) -> Json {
         ),
         tool_def(
             "draft_commit",
-            "Commit L1 (ready) changes, either all or selected paths.",
+            "Commit [L1] ready changes, either all or selected paths.",
+            false,
+            true,
             vec![
                 ("message", schema_prop("string", "Git commit message")),
                 ("paths", schema_str_array("Optional subset of paths from L1 to commit")),
@@ -604,6 +646,8 @@ fn tool_list_json(role: AgentRole) -> Json {
         tool_def(
             "draft_layer_manage",
             "List, add, remove, or rename revision layers.",
+            false,
+            true,
             vec![
                 ("action", schema_prop("string", "'list', 'add', 'rm', or 'rename'")),
                 ("name", schema_prop("string", "Layer name")),
@@ -618,6 +662,8 @@ fn tool_list_json(role: AgentRole) -> Json {
         tool_def(
             "draft_undo",
             "Restore the previous layer state snapshot.",
+            false,
+            false,
             vec![],
             vec![],
         ),
@@ -637,15 +683,23 @@ mod tests {
     #[test]
     fn role_tool_filtering_and_guardrails() {
         let coder_tools = tool_list_json(AgentRole::Coder);
-        let names: Vec<_> = coder_tools
-            .as_arr()
-            .unwrap()
-            .iter()
-            .filter_map(|t| t.get_str("name"))
-            .collect();
+        let coder_arr = coder_tools.as_arr().unwrap();
+        let names: Vec<_> = coder_arr.iter().filter_map(|t| t.get_str("name")).collect();
         assert!(names.contains(&"draft_stage"));
         assert!(!names.contains(&"draft_promote"));
         assert!(!names.contains(&"draft_commit"));
+
+        // Read-only annotations present on status tool
+        let status_def = coder_arr
+            .iter()
+            .find(|t| t.get_str("name") == Some("draft_status"))
+            .unwrap();
+        assert_eq!(
+            status_def
+                .get("annotations")
+                .and_then(|a| a.get_bool("readOnlyHint")),
+            Some(true)
+        );
 
         let rev_tools = tool_list_json(AgentRole::Reviewer);
         let rev_names: Vec<_> = rev_tools
@@ -654,6 +708,7 @@ mod tests {
             .iter()
             .filter_map(|t| t.get_str("name"))
             .collect();
+        assert!(rev_names.contains(&"draft_stage"));
         assert!(rev_names.contains(&"draft_promote"));
         assert!(!rev_names.contains(&"draft_commit"));
 

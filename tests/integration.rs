@@ -409,6 +409,13 @@ fn test_agent_init_and_mcp_stdio_pipeline() {
     r.git(&["commit", "-m", "init"]);
     r.gl_ok(&["init"]);
 
+    // Help works and agent init defaults to safe 'reviewer' role when --role omitted
+    let agent_help = r.gl_ok(&["agent", "--help"]);
+    assert!(agent_help.contains("gd agent init"), "{agent_help}");
+    r.gl_ok(&["agent", "init", "--target", "mcp"]);
+    let default_mcp = r.read(".vscode/mcp.json");
+    assert!(default_mcp.contains("\"reviewer\""), "{default_mcp}");
+
     // Agent init --target all --role reviewer writes all agent configs idempotently
     r.gl_ok(&["agent", "init", "--target", "all", "--role", "reviewer"]);
     r.gl_ok(&["agent", "init", "--target", "all", "--role", "reviewer"]);
@@ -475,14 +482,19 @@ fn test_agent_init_and_mcp_stdio_pipeline() {
         "{coder_out}"
     );
 
-    // 2) Reviewer inspects & promotes draft -> reviewed, blocked from commit
+    // 2) Reviewer inspects, cannot stage directly into ready, promotes draft -> reviewed, blocked from commit
     let rev_out = run_mcp(
         "reviewer",
         &[
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"draft_status","arguments":{}}}"#,
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"draft_promote","arguments":{"from":"draft","to":"reviewed","paths":["app.rs"]}}}"#,
-            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"draft_commit","arguments":{"message":"nope"}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"draft_stage","arguments":{"layer":"ready","paths":["app.rs"]}}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"draft_promote","arguments":{"from":"draft","to":"reviewed","paths":["app.rs"]}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"draft_commit","arguments":{"message":"nope"}}}"#,
         ],
+    );
+    assert!(
+        rev_out.contains("reviewer role may only stage directly into top layer"),
+        "{rev_out}"
     );
     assert!(
         rev_out.contains("promoted [L3] draft -> [L2] reviewed"),

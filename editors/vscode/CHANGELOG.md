@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- Refine AI-agent workflow & illustrations (`agent-workflow.png`, `agent-roles.png`) across docs and Extension Details
+- Fix `reviewer` MCP role to allow staging review edits into the top `draft` layer (while blocking `draft_commit`), add MCP tool `annotations`, and make `reviewer` the safe default for `gd agent init`
+- Auto-resolve managed `gd` binary path in `.vscode/mcp.json` when `gd` is not on `PATH` and add quick-open buttons after VS Code agent setup
+
 ## 0.1.3
 
 - Add built-in AI-agent instruction/skill generator (`gd agent init`) and role-scoped stdio MCP server (`gd mcp --role coder|reviewer|lead`)

@@ -45,17 +45,17 @@ When coding with AI agents, one staging area isn't enough. Agents generate large
 Layers are stored in `.git/drafts/` as an ordered stack of standard Git index files from **most revised (closest to `HEAD`)** to **least revised (closest to Working Tree)**:
 
 ```mermaid
-flowchart TB
-    WT["[WT] Working Tree (unstaged & untracked)"]
+flowchart BT
+    WT["[WT] Working Tree (unstaged &amp; untracked)"]
     L3["[L3] draft — raw AI-agent experiments"]
     L2["[L2] reviewed — human-checked hunks"]
     L1["[L1] ready — commit target · mirrors .git/index"]
     HEAD["HEAD (committed history)"]
 
-    WT -- "gd stage" --> L3
+    WT -- "gd stage ↑" --> L3
     L3 -- "gd promote ↑" --> L2
     L2 -- "gd promote ↑" --> L1
-    L1 -- "gd commit (all or -p)" --> HEAD
+    L1 -- "gd commit (all or -p) ↑" --> HEAD
     L1 -. "gd demote ↓" .-> L2
     L2 -. "gd demote ↓" .-> L3
     L3 -. "gd demote --to wt ↓" .-> WT
@@ -183,8 +183,8 @@ gd layer rm security-check --merge-down   # or --merge-up / --drop
    ```bash
    cd editors/vscode
    npm ci && npm run compile
-   npx @vscode/vsce package --out git-drafts-0.1.0.vsix
-   code --install-extension git-drafts-0.1.0.vsix
+   npx @vscode/vsce package --out git-drafts.vsix
+   code --install-extension git-drafts.vsix
    ```
 2. **Bidirectional `.git/index` Mirror (any IDE):**
    `gd config sync-git-index true` keeps `[L1] ready` synced with `.git/index`, so built-in Git UIs show `ready` under **Staged Changes** while `reviewed`/`draft` stay isolated.
@@ -193,25 +193,80 @@ gd layer rm security-check --merge-down   # or --merge-up / --drop
 
 ---
 
-## AI-Agent Workflow (`gd agent init` + Built-in MCP Server)
+## AI-Agent Workflow (`gd agent init` + Built-in MCP)
 
-Equip coding & review agents in any repo to use `git-drafts` automatically — **so agents stage into `draft`, reviewers promote to `reviewed`, and changes only commit after passing every gate**:
+Keep AI coding assistants productive **without letting half-tested edits leak into Git history** — coding agents stage drafts, review agents promote vetted hunks, and commits stay gated behind human or Lead approval.
 
-### 1. Generate Repo Agent Instructions & Skill
+<p align="center">
+  <img src="assets/agent-workflow.png" alt="Solo and Multi-Agent git-drafts Safety Workflows" width="100%" />
+</p>
+
+### 1. One-Command Repository Setup
+
+Initialize instructions, the canonical Agent Skill (`SKILL.md`), and MCP configuration in any repo:
+
 ```bash
-gd agent init                 # writes AGENTS.md, .agents/skills/git-drafts/SKILL.md, & updates existing agent files
-gd agent init --target all    # also writes CLAUDE.md, GEMINI.md, Cursor .mdc, Copilot instructions, & .vscode/mcp.json
+gd agent init                 # writes AGENTS.md, .agents/skills/git-drafts/SKILL.md, & updates detected configs
+gd agent init --target all    # adds CLAUDE.md, GEMINI.md, Cursor .mdc, Copilot instructions, & .vscode/mcp.json
+gd agent snippet              # prints the concise Markdown rule block for manual pasting
 ```
-*(Or click **Agents** in the VS Code Draft Pipeline toolbar / run `Git Drafts: Setup Agent Instructions & MCP`.)*
 
-### 2. Run Role-Scoped Stdio MCP Server (`gd mcp`)
-Expose structured `draft_*` tools directly inside `gd` with built-in permission guardrails per agent role:
+In **VS Code**, click **AI Agents** in the **Draft Pipeline** toolbar (or run `Git Drafts: Setup Agent Instructions & MCP`) to pick your files and MCP guardrail role interactively.
 
-| Role | Command | Allowed Capabilities |
+<details>
+<summary>Supported <code>--target</code> &amp; file mappings</summary>
+
+| Target flag | Generated / updated path | Used by |
 | :--- | :--- | :--- |
-| **Coder** | `gd mcp --role coder` | Inspect (`draft_status`, `draft_diff`, `draft_blob`), stage/drop in top `draft` layer only — **cannot promote or commit** |
-| **Reviewer** | `gd mcp --role reviewer` | Inspect + `draft_promote` / `draft_demote` / `draft_patch_apply` across layers — **cannot commit** |
-| **Lead** | `gd mcp --role lead` | Full pipeline including `draft_commit` and `draft_layer_manage` |
+| `agents` | `AGENTS.md` | Codex, Antigravity, universal agents |
+| `skill` | `.agents/skills/git-drafts/SKILL.md` | Agent Skill-compatible assistants |
+| `claude` | `CLAUDE.md` | Claude Code |
+| `gemini` | `GEMINI.md` | Gemini CLI |
+| `cursor` | `.cursor/rules/git-drafts.mdc` | Cursor (`alwaysApply: true`) |
+| `copilot` | `.github/copilot-instructions.md` | GitHub Copilot |
+| `mcp` | `.vscode/mcp.json` | VS Code / MCP stdio clients (defaults to `--role reviewer`) |
+| `auto` *(default)* | `AGENTS.md` + `SKILL.md` + any already-present tool files | Minimal repo footprint |
+| `all` | All of the above | Teams using mixed AI tools |
+
+*(Markdown injections use `<!-- git-drafts:start -->` / `<!-- git-drafts:end -->` markers so re-running is idempotent and preserves your existing rules.)*
+
+</details>
+
+### 2. Choose Your Workflow Mode
+
+- **Mode A · Solo Dev + 1 AI Assistant (Default `--role reviewer`):**  
+  Your assistant writes code, runs tests, stages into `[L3] draft`, and promotes verified files/hunks to `[L2] reviewed` — while **`draft_commit` is blocked**. You inspect the clean diff in VS Code and commit `[L1] ready` when sure.
+- **Mode B · Multi-Agent Swarm (`Coder → Reviewer → Lead`):**  
+  Assign each agent its own MCP role process so layer boundaries are enforced on the server side rather than relying on prompts alone:
+
+<p align="center">
+  <img src="assets/agent-roles.png" alt="gd agent init Setup and Built-In MCP Role Guardrails" width="100%" />
+</p>
+
+| Role | Launch Command | Permitted Layer Scope |
+| :--- | :--- | :--- |
+| **Coder** | `gd mcp --role coder` | Inspect (`status`, `diff`, `blob`) + `draft_stage` / `draft_demote` / `draft_drop` **on top `draft` layer only** · **cannot promote or commit** |
+| **Reviewer** *(default in `init`)* | `gd mcp --role reviewer` | Coder tools + `draft_promote` / `draft_demote` / `draft_patch_apply` across layers · **cannot commit or manage layers** |
+| **Lead** | `gd mcp --role lead` | Full pipeline including `draft_commit`, `draft_init`, and `draft_layer_manage` |
+
+<details>
+<summary>Example: multi-role <code>.vscode/mcp.json</code> &amp; built-in MCP tool list (12 tools)</summary>
+
+```json
+{
+  "servers": {
+    "git-drafts-coder": { "type": "stdio", "command": "gd", "args": ["mcp", "--role", "coder"] },
+    "git-drafts-reviewer": { "type": "stdio", "command": "gd", "args": ["mcp", "--role", "reviewer"] },
+    "git-drafts-lead": { "type": "stdio", "command": "gd", "args": ["mcp", "--role", "lead"] }
+  }
+}
+```
+
+- **Read-only (`readOnlyHint: true`):** `draft_status`, `draft_diff`, `draft_blob`
+- **Draft / Review mutations:** `draft_stage`, `draft_promote`, `draft_demote`, `draft_patch_apply`, `draft_undo`, `draft_init`
+- **Destructive / Commit gate (`destructiveHint: true`):** `draft_drop`, `draft_commit`, `draft_layer_manage`
+
+</details>
 
 ---
 
@@ -224,14 +279,14 @@ Expose structured `draft_*` tools directly inside `gd` with built-in permission 
 | `gd diff [<layer>\|wt] [--from A --to B] [-- <paths...>]` | Show diff for a layer or between any two states |
 | `gd stage [-l <layer>] [-p\|-A] [<paths...>]` | Stage `WT` changes into `<layer>` (default: top layer) |
 | `gd promote [--from L] [--to L] [-p\|-A] [<paths...>]` | Move changes toward `HEAD` (`ready`) |
-| `gd demote [--from L] [--to L\|wt] [-p\|-A] [<paths...>]` | Move changes away from commit |
+| `gd demote [--from L] [--to L\|wt] [-p\|-A] [<paths...>]` | Move changes back toward `draft` / `WT` |
 | `gd drop <layer> [-p\|-A] [--cascade] [--hard] [<paths...>]` | Discard changes from a layer |
 | `gd commit [-p] [<paths...>] [git-commit-opts...]` | Commit `[L1] ready` (all or selected paths/hunks) |
 | `gd layer list \| add \| rm \| rename` | Manage revision layers dynamically |
 | `gd blob <spec> <path> [--allow-missing]` | Print raw file bytes at a layer/`head`/`wt` |
 | `gd patch-apply --from A --to B` | Apply unified diff from stdin between layers |
 | `gd config sync-git-index [true\|false]` | Mirror `[L1] ready` into `.git/index` |
-| `gd agent init [--target T] [--role R]` | Generate `AGENTS.md`, `SKILL.md`, & MCP config |
+| `gd agent init [--target T] [--role R] [--mcp-command CMD]` | Generate `AGENTS.md`, `SKILL.md`, & MCP config (default role: `reviewer`) |
 | `gd agent snippet` | Print concise agent instruction block |
 | `gd mcp [--role coder\|reviewer\|lead]` | Start stdio MCP server with role guardrails |
 | `gd undo` | Restore previous layer snapshot |

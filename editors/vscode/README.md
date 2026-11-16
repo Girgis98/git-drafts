@@ -16,6 +16,19 @@ Stop forcing messy AI-agent edits into a single Git staging area. `Git Drafts` i
 - **Multiselect Batch Actions:** Select multiple files (`Ctrl+Click` / `Shift+Click`) to `Stage`, `Promote ↑`, `Demote ↓`, `Drop`, or partially `Commit` in one click.
 - **Diff Editor Hunk Controls:** When viewing any `git-drafts` side-by-side diff, promote or demote the hunk at your cursor directly from the editor title bar (`Promote Hunk ↑` / `Demote Hunk ↓`).
 - **Status Bar Counter:** Live summary (`Drafts: ready(1) · reviewed(0) · draft(2)`) in the status bar.
+- **1-Click AI-Agent & MCP Setup:** Generate `AGENTS.md`, `.agents/skills/git-drafts/SKILL.md`, and `.vscode/mcp.json` powered by the built-in `gd mcp` server with role-based guardrails.
+
+![Solo and Multi-Agent git-drafts Safety Workflows](https://raw.githubusercontent.com/Girgis98/git-drafts/main/assets/agent-workflow.png)
+
+## AI-Agent Workflow & Built-in MCP
+
+Click **AI Agents** in the **Draft Pipeline** toolbar (or run `Git Drafts: Setup Agent Instructions & MCP`) to equip Copilot, Claude, Cursor, Gemini, or Codex:
+
+1. **Choose target files:** `Recommended` (`AGENTS.md`, Skill, `.vscode/mcp.json`, plus any detected configs) or `All`.
+2. **Choose MCP role guardrail:**
+   - **Reviewer (Default):** AI can inspect diffs, stage edits into `draft`, and promote verified changes to `reviewed` — **`draft_commit` is blocked** so you stay in charge of committing.
+   - **Coder:** Restricted to the top `draft` sandbox layer only.
+   - **Lead:** Full pipeline access including `draft_commit`.
 
 ## Zero-Step Setup
 

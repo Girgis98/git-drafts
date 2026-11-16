@@ -5,55 +5,81 @@ description: Multi-phase layered Git staging workflow for AI coding and review a
 
 # `git-drafts` (`gd`) Multi-Agent Workflow
 
-This repository uses **layered staging phases** on top of `HEAD` (`ready < reviewed < draft < working-tree` by default) instead of Git's single staging area.
+This repository replaces Git's single staging area with an ordered stack of **layered staging buffers** on top of `HEAD`:
+
+```text
+  HEAD            (committed history — untouched until final gate)
+   ▲  gd commit
+  [L1] ready      (commit target · optional .git/index mirror)
+   ▲  gd promote / ↓ gd demote
+  [L2] reviewed   (verified changes awaiting final approval)
+   ▲  gd promote / ↓ gd demote
+  [L3] draft      (top layer · sandbox for raw AI-agent edits)
+   ▲  gd stage
+  [WT] working    (unstaged & untracked workspace edits)
+```
+
+*(Layer names may be customized — always inspect actual names via `gd status --json` or `draft_status`.)*
+
+---
 
 ## Core Invariants
 
-- **Never bypass layers with raw `git add` or `git commit`** unless `sync_git_index` is intentionally enabled for `[L1] ready`.
-- **Inspect state first:** Always run `gd status --json` (or `draft_status` MCP tool) and `gd layer list` before staging or promoting.
-- **Keep layers ordered:** `[L1]` (bottommost, e.g. `ready`) is the ONLY commit target; `[Ln]` (topmost, e.g. `draft`) holds raw unreviewed work.
-- **Undo mistakes safely:** Run `gd undo` (up to 15 snapshots) rather than destructive `git reset`.
+1. **Never bypass layers:** Do NOT run raw `git add` or `git commit` (unless `sync_git_index` is enabled for `[L1] ready`).
+2. **Inspect before acting:** Always call `gd status --json` (or MCP `draft_status`) first to read current layer names and file placement.
+3. **Bottom (`[L1]`) = commit target; Top (`[Ln]`) = draft sandbox:** Promote vetted work toward `HEAD` (`ready`); demote rejected work back toward `draft` or `wt`.
+4. **Never pass `-p` without a TTY:** Automated agents must use file-level commands (`gd stage -- <files>`) or non-interactive hunk patching (`gd patch-apply --from A --to B`).
+5. **Recover safely:** Use `gd undo` (last 15 layer operations) instead of destructive `git reset`.
 
-## Role-Based Multi-Agent Protocol
+---
 
-### 1. Coder / Implementer Agent
-1. Make edits in the working tree.
-2. Stage finished task files into the top draft layer only:
+## Choosing Your Workflow Mode
+
+- **Solo Dev + 1 AI Agent:** Run MCP as `--role reviewer` (default) or `--role coder`. You edit, verify, stage into `draft`, and optionally promote clean changes to `reviewed` — **you cannot commit**; the human promotes to `ready` and commits when sure.
+- **Multi-Agent Team (`Coder -> Reviewer -> Lead`):** Run separate roles so each stage acts as a hard permission gate.
+
+---
+
+## Role Protocols
+
+### 1. Coder / Implementer (`gd mcp --role coder`)
+*Permissions: inspect (`status`, `diff`, `blob`), stage/demote/drop **only in the top `draft` layer**, undo. **Cannot promote or commit.***
+
+1. Implement edits in the working tree.
+2. Stage finished task files into the top draft layer:
    ```bash
    gd stage -- <file1> <file2>
    ```
-3. Verify your layer delta with `gd diff draft` and `gd status --json`.
-4. **Do NOT promote into `ready` or run `gd commit` / `git commit`** unless explicitly acting as Lead/Committer.
+3. Verify your isolated draft delta (`gd diff draft`, `gd status --json`).
 
-### 2. Reviewer / QA Agent
-1. Inspect pending drafts:
+### 2. Reviewer / QA (`gd mcp --role reviewer`)
+*Permissions: Coder permissions + `promote`, `demote`, and `patch_apply` across layers. **Cannot commit.***
+
+1. Inspect unreviewed changes in the top layer:
    ```bash
    gd status --json
    gd diff draft
    ```
-2. Run build/test checks against the working tree or layer changes.
-3. For approved files, promote one layer closer to commit:
+2. Run build/tests and verify behavior. Apply small review fixes and stage them into `draft` if needed (`gd stage -- <files>`).
+3. **Approve whole files** toward commit readiness:
    ```bash
    gd promote --from draft --to reviewed -- <approved_files...>
    ```
-4. For partial file approval (hunk-level without TTY), extract the unified diff hunk via `gd diff --from reviewed --to draft -- <file>` and pipe selected hunks into:
+4. **Approve individual hunks (non-TTY):** inspect the diff (`gd diff --from reviewed --to draft -- <file>`) and pipe selected unified diff hunks into:
    ```bash
    gd patch-apply --from draft --to reviewed
    ```
-5. For rejected changes, push them back (`gd demote --from <layer> --to wt -- <files>`) or drop from layers (`gd drop <layer> -- <files>`).
+5. **Reject / push back:** move changes back (`gd demote --from <layer> --to wt -- <files>`) or drop from the layer (`gd drop <layer> -- <files>`).
 
-### 3. Lead / Finalizer Agent (or Human)
-1. Review `[L2] reviewed` (`gd diff reviewed`) and promote verified work to `[L1] ready`:
+### 3. Lead / Committer (`gd mcp --role lead`)
+*Permissions: full pipeline including `draft_commit`, `draft_init`, and `draft_layer_manage`.*
+
+1. Review `[L2] reviewed` (`gd diff reviewed`) and promote final approved files into `[L1] ready`:
    ```bash
    gd promote --from reviewed --to ready -- <files...>
    ```
-2. Run final verification, then commit all or part of `[L1] ready`:
+2. Run final checks, then commit all or part of `[L1] ready`:
    ```bash
-   gd commit -m "feat: concise summary"               # full ready layer
-   gd commit <file1> -m "feat: partial ready commit"   # subset only
+   gd commit -m "feat: concise summary"               # commit all of ready
+   gd commit <file1> -m "feat: partial ready commit"   # commit subset only
    ```
-
-## Non-Interactive Tooling & MCP
-
-Prefer `gd status --json`, `gd blob <layer|head|wt> <path> --allow-missing`, and `gd patch-apply --from A --to B` in automated/non-TTY environments. Never pass `-p` without an interactive TTY.
-If running via MCP (`gd mcp --role coder|reviewer|lead`), use the `draft_*` tools directly; role guardrails enforce layer boundaries automatically.

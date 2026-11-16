@@ -14,13 +14,17 @@ pub fn agent_snippet() -> &'static str {
 <!-- git-drafts:start -->
 ## Layered Staging (`git-drafts` / `gd`)
 
-This repository uses `git-drafts` (`gd`) for multi-phase layered staging on top of `HEAD` (`ready < reviewed < draft < working-tree`).
+This repository uses `git-drafts` (`gd`) for multi-phase layered staging instead of a single Git index:
 
-- **Inspect state first:** `gd status --json` and `gd layer list` (or MCP `draft_status`).
-- **Coder agents:** stage completed edits into the top draft layer only (`gd stage -- <paths...>`). Do **not** promote to `ready` or run `git commit` / `gd commit`.
-- **Reviewer / QA agents:** inspect `gd diff draft`, run checks, and promote verified files (`gd promote --from draft --to reviewed -- <paths...>`) or hunks (`gd patch-apply --from draft --to reviewed`), or push back with `gd demote` / `gd drop`.
-- **Lead / Commit gate:** promote `reviewed` -> `ready` and commit only verified changes (`gd commit [<paths...>] -m \"...\"`).
-- **Non-interactive rule:** never pass `-p` without a TTY; use `gd status --json`, `gd diff`, `gd blob`, and `gd patch-apply`. Use `gd undo` to revert layer mistakes.
+```text
+HEAD <- [L1] ready (commit target) <- [L2] reviewed <- [L3] draft (sandbox) <- [WT] working-tree
+```
+
+- **Inspect first:** Always run `gd status --json` and `gd layer list` (or MCP `draft_status`) before acting.
+- **Coder / single agent:** Stage finished edits into the top draft layer (`gd stage -- <paths...>` or `draft_stage`). Do **not** run `git add`, `git commit`, or `gd commit` unless acting as Lead/Committer.
+- **Reviewer / QA:** Inspect `gd diff draft` (`draft_diff`), run checks, and promote verified files (`gd promote --from draft --to reviewed -- <paths...>`) or hunks (`gd patch-apply --from draft --to reviewed`), or push back (`gd demote` / `gd drop`).
+- **Lead / Commit gate:** Promote `reviewed` -> `ready`, run final checks, then commit (`gd commit [<paths...>] -m \"...\"`).
+- **Non-TTY safety:** Never pass `-p` without an interactive TTY; use `gd status --json`, `gd diff`, `gd blob`, and `gd patch-apply`. Use `gd undo` to revert layer mistakes. See `.agents/skills/git-drafts/SKILL.md` for full workflows.
 <!-- git-drafts:end -->"
 }
 
@@ -76,6 +80,7 @@ pub fn cmd_agent_init(
     repo: &RepoCtx,
     targets: &[AgentTarget],
     role: AgentRole,
+    mcp_command: Option<&str>,
 ) -> Result<(), String> {
     let root = &repo.work_tree;
     let effective = if targets.is_empty() {
@@ -137,7 +142,7 @@ pub fn cmd_agent_init(
     let vscode_dir = root.join(".vscode");
     if has(AgentTarget::Mcp) || (is_auto && vscode_dir.is_dir()) {
         let p = vscode_dir.join("mcp.json");
-        upsert_vscode_mcp(&p, role)?;
+        upsert_vscode_mcp(&p, role, mcp_command.unwrap_or("gd"))?;
         updated.push(".vscode/mcp.json".to_string());
     }
 
@@ -182,7 +187,7 @@ fn append_block(existing: &str, block: &str) -> String {
     }
 }
 
-fn upsert_vscode_mcp(path: &Path, role: AgentRole) -> Result<(), String> {
+fn upsert_vscode_mcp(path: &Path, role: AgentRole, command: &str) -> Result<(), String> {
     let mut root_entries = if path.exists() {
         let raw = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         match json::parse(&raw)? {
@@ -195,7 +200,7 @@ fn upsert_vscode_mcp(path: &Path, role: AgentRole) -> Result<(), String> {
 
     let server_cfg = Json::obj(vec![
         ("type", Json::Str("stdio".to_string())),
-        ("command", Json::Str("gd".to_string())),
+        ("command", Json::Str(command.to_string())),
         (
             "args",
             Json::Arr(vec![

@@ -78,9 +78,9 @@ USAGE:
   gd stage [-l <layer>] [-p|-A] [<paths...>]
                                            Stage WT changes into <layer> (default: top layer)
   gd promote [--from L] [--to L] [-p|-A] [<paths...>]
-                                           Move changes down toward HEAD (commit-ready)
+                                           Move changes toward HEAD (commit-ready)
   gd demote [--from L] [--to L|wt] [-p|-A] [<paths...>]
-                                           Move changes up away from commit
+                                           Move changes back toward draft / WT
   gd drop <layer> [-p|-A] [--cascade] [--hard] [<paths...>]
                                            Drop changes from <layer>
   gd commit [-p] [<paths...>] [git-commit-opts...]
@@ -95,7 +95,8 @@ USAGE:
                                            Output file bytes at a layer (for IDE diff providers)
   gd patch-apply --from <src> --to <dst>   Apply unified patch from stdin between layers
   gd config <key> [<value>]                Get or set repo draft config (sync-git-index)
-  gd agent init [--target T] [--role R]    Write AI agent instructions, skill & MCP config
+  gd agent init [--target T] [--role R] [--mcp-command CMD]
+                                           Write AI agent instructions, skill & MCP config
   gd agent snippet                         Print concise agent instruction markdown block
   gd mcp [--role coder|reviewer|lead]      Run stdio MCP server with role guardrails
   gd undo                                  Restore previous layer state
@@ -146,9 +147,20 @@ pub fn run() -> Result<(), String> {
         return mcp::serve(role);
     }
 
-    if cmd == "agent" && rest.first().map(String::as_str) == Some("snippet") {
-        agent::cmd_agent_snippet();
-        return Ok(());
+    if cmd == "agent" {
+        let sub = rest.first().map(String::as_str).unwrap_or("init");
+        if matches!(sub, "-h" | "--help" | "help") {
+            println!("USAGE:\n  gd agent init [--target auto|all|agents|claude|cursor|copilot|gemini|skill|mcp] [--role reviewer|coder|lead] [--mcp-command CMD]\n  gd agent snippet");
+            return Ok(());
+        }
+        if sub == "init" && rest.iter().any(|a| matches!(a.as_str(), "-h" | "--help")) {
+            println!("USAGE: gd agent init [--target auto|all|agents|claude|cursor|copilot|gemini|skill|mcp] [--role reviewer|coder|lead] [--mcp-command CMD]");
+            return Ok(());
+        }
+        if sub == "snippet" {
+            agent::cmd_agent_snippet();
+            return Ok(());
+        }
     }
 
     let repo = RepoCtx::discover(None)?;
@@ -571,7 +583,8 @@ pub fn run() -> Result<(), String> {
             match sub {
                 "init" => {
                     let mut targets = Vec::new();
-                    let mut role = AgentRole::Lead;
+                    let mut role = AgentRole::Reviewer;
+                    let mut mcp_command: Option<String> = None;
                     let mut i = 0;
                     while i < sub_rest.len() {
                         match sub_rest[i].as_str() {
@@ -585,15 +598,20 @@ pub fn run() -> Result<(), String> {
                                 let r = sub_rest.get(i).ok_or("--role requires a value")?;
                                 role = AgentRole::parse(r)?;
                             }
+                            "--mcp-command" => {
+                                i += 1;
+                                let c = sub_rest.get(i).ok_or("--mcp-command requires a value")?;
+                                mcp_command = Some(c.clone());
+                            }
                             "-h" | "--help" => {
-                                println!("USAGE: gd agent init [--target auto|all|agents|claude|cursor|copilot|gemini|skill|mcp] [--role coder|reviewer|lead]");
+                                println!("USAGE: gd agent init [--target auto|all|agents|claude|cursor|copilot|gemini|skill|mcp] [--role reviewer|coder|lead] [--mcp-command CMD]");
                                 return Ok(());
                             }
                             other => return Err(format!("unknown flag '{other}'")),
                         }
                         i += 1;
                     }
-                    agent::cmd_agent_init(&repo, &targets, role)
+                    agent::cmd_agent_init(&repo, &targets, role, mcp_command.as_deref())
                 }
                 "snippet" => {
                     agent::cmd_agent_snippet();
