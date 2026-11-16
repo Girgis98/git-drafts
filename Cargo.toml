@@ -1,0 +1,13 @@
+[package]
+name = "git-drafts"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-phase layered staging drafts for Git"
+
+[[bin]]
+name = "git-drafts"
+path = "src/main.rs"
+
+[[bin]]
+name = "gd"
+path = "src/bin/gd.rs"
