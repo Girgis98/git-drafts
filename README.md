@@ -26,6 +26,10 @@ When coding with AI agents, one staging area isn't enough. Agents generate large
 
 ## Why Use `git-drafts`?
 
+<p align="center">
+  <img src="assets/comparison.png" alt="Standard Git vs git-drafts layered staging" width="100%" />
+</p>
+
 - **Built for AI-agent workflows:** Keep raw agent output in `draft`, human-checked edits in `reviewed`, and commit-ready changes in `ready` — without polluting your commit history or losing track of what you actually vetted.
 - **As many layers as you want:** Start with `ready < reviewed < draft`, or insert custom phases (`tested`, `security-checked`, `polish`, etc.) at any position in the stack.
 - **Hunk-level precision (`-p` & IDE):** Promote, demote, drop, or partially commit individual hunks without touching your working tree.

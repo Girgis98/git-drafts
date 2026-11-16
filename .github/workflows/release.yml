@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-cli:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked
+      - name: Archive binaries
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/release/gd${{ matrix.ext }}" "target/release/git-drafts${{ matrix.ext }}" dist/
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "git-drafts-${{ matrix.target }}.zip" ./dist/*
+          else
+            tar -czf "git-drafts-${{ matrix.target }}.tar.gz" -C dist .
+          fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            git-drafts-*.tar.gz
+            git-drafts-*.zip
+
+  build-vsix:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editors/vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - run: npm run compile
+      - run: npx --yes @vscode/vsce package --out "git-drafts-${{ github.ref_name }}.vsix"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: editors/vscode/*.vsix
+      - name: Publish to VS Code Marketplace (when VSCE_PAT secret is configured)
+        if: ${{ secrets.VSCE_PAT != '' }}
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce publish --packagePath "git-drafts-${{ github.ref_name }}.vsix"

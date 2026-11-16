@@ -358,3 +358,44 @@ fn test_ide_json_blob_patch_apply_and_sync_git_index() {
     );
     assert!(st_after_reset.contains("ext.txt"), "{st_after_reset}");
 }
+
+#[test]
+fn test_version_and_subdirectory_paths() {
+    let r = TempRepo::new();
+    let ver = r.gl_ok(&["--version"]);
+    assert!(ver.contains("git-drafts"), "{ver}");
+
+    r.write("top.txt", "top v1\n");
+    r.write("sub/nested/item.txt", "nested v1\n");
+    r.git(&["add", "."]);
+    r.git(&["commit", "-m", "init"]);
+    r.gl_ok(&["init"]);
+
+    r.write("top.txt", "top v2\n");
+    r.write("sub/nested/item.txt", "nested v2\n");
+
+    let subdir = r.dir.join("sub").join("nested");
+    let run_in_sub = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_gd"))
+            .current_dir(&subdir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "sub gd {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+
+    run_in_sub(&["stage", "item.txt", "../../top.txt"]);
+    run_in_sub(&["promote", "--from", "draft", "--to", "ready", "item.txt"]);
+    let d = run_in_sub(&["diff", "ready", "item.txt"]);
+    assert!(d.contains("nested v2"), "{d}");
+    run_in_sub(&["commit", "item.txt", "-m", "commit nested"]);
+    let st = run_in_sub(&["status"]);
+    assert!(st.contains("[L1] ready (commit target) (0 files)"), "{st}");
+    assert!(st.contains("top.txt"), "{st}");
+}

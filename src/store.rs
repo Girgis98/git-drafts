@@ -174,11 +174,12 @@ impl LayerStore {
             let tk = repo.write_tree(&idx)?;
             if tk == base_tree {
                 repo.read_tree(&idx, &new_tree)?;
-            } else {
+            } else if tk != new_tree {
                 repo.read_tree_merge(&idx, &base_tree, &new_tree, &tk)?;
             }
         }
         self.manifest.base_head = current;
+        let _ = fs::remove_dir_all(self.cache_dir());
         self.save_manifest()?;
         self.maybe_mirror_git_index(repo)?;
         Ok(true)
@@ -398,6 +399,7 @@ impl LayerStore {
             }
         }
         self.manifest = snap_parsed;
+        let _ = fs::remove_dir_all(self.cache_dir());
         self.save_manifest()?;
         self.maybe_mirror_git_index(repo)?;
         fs::remove_dir_all(&snap).map_err(|e| format!("cleanup undo snap: {e}"))?;

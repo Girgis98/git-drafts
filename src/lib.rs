@@ -5,8 +5,59 @@ pub mod store;
 use git::RepoCtx;
 use ops::{DropOpts, InsertPos, RmMode};
 use std::env;
+use std::fs;
 use std::io::Read;
+use std::path::{Component, Path};
 use store::LayerStore;
+
+fn resolve_user_paths(repo: &RepoCtx, paths: &[String]) -> Vec<String> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let Ok(cwd) = env::current_dir() else {
+        return paths.to_vec();
+    };
+    let Ok(cwd_canon) = fs::canonicalize(&cwd) else {
+        return paths.to_vec();
+    };
+    let Ok(wt_canon) = fs::canonicalize(&repo.work_tree) else {
+        return paths.to_vec();
+    };
+    let Ok(prefix) = cwd_canon.strip_prefix(&wt_canon) else {
+        return paths.to_vec();
+    };
+    if prefix.as_os_str().is_empty() {
+        return paths.to_vec();
+    }
+    paths
+        .iter()
+        .map(|p| {
+            if p.starts_with(":(") || Path::new(p).is_absolute() {
+                return p.clone();
+            }
+            normalize_rel_posix(&prefix.join(p))
+        })
+        .collect()
+}
+
+fn normalize_rel_posix(path: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(s) => parts.push(s.to_string_lossy().to_string()),
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    }
+}
 
 fn print_help() {
     println!(
@@ -56,6 +107,10 @@ pub fn run() -> Result<(), String> {
     let raw_args: Vec<String> = env::args().skip(1).collect();
     if raw_args.is_empty() || matches!(raw_args[0].as_str(), "-h" | "--help" | "help") {
         print_help();
+        return Ok(());
+    }
+    if matches!(raw_args[0].as_str(), "-V" | "--version") {
+        println!("git-drafts {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
@@ -127,7 +182,10 @@ pub fn run() -> Result<(), String> {
                 let first = pos[0].clone();
                 let looks_like_layer =
                     first.eq_ignore_ascii_case("wt") || store.resolve_layer(&first).is_ok();
-                if looks_like_layer && !repo.work_tree.join(&first).exists() {
+                if looks_like_layer
+                    && !Path::new(&first).exists()
+                    && !repo.work_tree.join(&first).exists()
+                {
                     layer = Some(first);
                     paths.extend(pos.into_iter().skip(1));
                 } else {
@@ -137,6 +195,7 @@ pub fn run() -> Result<(), String> {
                 paths.extend(pos);
             }
             paths.extend(tail_paths.iter().cloned());
+            let paths = resolve_user_paths(&repo, &paths);
             ops::cmd_diff(
                 &repo,
                 &store,
@@ -173,7 +232,11 @@ pub fn run() -> Result<(), String> {
                 let is_layer = store.resolve_layer(&first).is_ok();
                 let explicit_path_follows =
                     pos.len() > 1 || !tail_paths.is_empty() || all || interactive;
-                if is_layer && explicit_path_follows && !repo.work_tree.join(&first).exists() {
+                if is_layer
+                    && explicit_path_follows
+                    && !Path::new(&first).exists()
+                    && !repo.work_tree.join(&first).exists()
+                {
                     layer = Some(first);
                     paths.extend(pos.into_iter().skip(1));
                 } else {
@@ -183,6 +246,7 @@ pub fn run() -> Result<(), String> {
                 paths.extend(pos);
             }
             paths.extend(tail_paths.iter().cloned());
+            let paths = resolve_user_paths(&repo, &paths);
             ops::cmd_stage(&repo, &store, layer.as_deref(), &paths, interactive, all)
         }
         "promote" => {
@@ -212,6 +276,7 @@ pub fn run() -> Result<(), String> {
                 i += 1;
             }
             paths.extend(tail_paths.iter().cloned());
+            let paths = resolve_user_paths(&repo, &paths);
             ops::cmd_promote(
                 &repo,
                 &store,
@@ -249,6 +314,7 @@ pub fn run() -> Result<(), String> {
                 i += 1;
             }
             paths.extend(tail_paths.iter().cloned());
+            let paths = resolve_user_paths(&repo, &paths);
             ops::cmd_demote(
                 &repo,
                 &store,
@@ -291,6 +357,7 @@ pub fn run() -> Result<(), String> {
                 i += 1;
             }
             paths.extend(tail_paths.iter().cloned());
+            let paths = resolve_user_paths(&repo, &paths);
             let layer_spec = layer.ok_or("drop requires <layer>")?;
             ops::cmd_drop(
                 &repo,
@@ -336,6 +403,7 @@ pub fn run() -> Result<(), String> {
                 i += 1;
             }
             paths.extend(tail_paths.iter().cloned());
+            let paths = resolve_user_paths(&repo, &paths);
             ops::cmd_commit(&repo, &mut store, &paths, interactive, &git_args)
         }
         "layer" => {
@@ -425,7 +493,8 @@ pub fn run() -> Result<(), String> {
             if pos.len() != 2 {
                 return Err("USAGE: gd blob <layer|head|wt> <path> [--allow-missing]".to_string());
             }
-            ops::cmd_blob(&repo, &store, &pos[0], &pos[1], allow_missing)
+            let resolved = resolve_user_paths(&repo, &pos[1..2]);
+            ops::cmd_blob(&repo, &store, &pos[0], &resolved[0], allow_missing)
         }
         "patch-apply" => {
             let (store, _) = LayerStore::load_and_sync(&repo)?;
