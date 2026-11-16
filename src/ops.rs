@@ -53,7 +53,10 @@ pub fn compute_trees(repo: &RepoCtx, store: &LayerStore) -> Result<Vec<String>, 
             .unwrap_or_else(|_| Err("head tree thread panicked".to_string()));
         let trees: Vec<Result<String, String>> = handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_else(|_| Err("worker thread panicked".to_string())))
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err("worker thread panicked".to_string()))
+            })
             .collect();
         (head_res, trees)
     });
@@ -107,9 +110,14 @@ fn collect_status(repo: &RepoCtx, store: &LayerStore) -> Result<StatusSnapshot, 
 
         let mut diffs = Vec::with_capacity(n);
         for h in diff_handles {
-            diffs.push(h.join().unwrap_or_else(|_| Err("diff thread panicked".to_string())));
+            diffs.push(
+                h.join()
+                    .unwrap_or_else(|_| Err("diff thread panicked".to_string())),
+            );
         }
-        let wt = wt_h.join().unwrap_or_else(|_| Err("wt thread panicked".to_string()));
+        let wt = wt_h
+            .join()
+            .unwrap_or_else(|_| Err("wt thread panicked".to_string()));
         (diffs, wt)
     });
 
@@ -268,7 +276,9 @@ pub fn cmd_diff(
                 let k = store.resolve_layer(f)?;
                 repo.diff_files_patch(&store.idx_path(&store.manifest.layers[k]), paths, color)?
             };
-            io::stdout().write_all(&src_idx).map_err(|e| e.to_string())?;
+            io::stdout()
+                .write_all(&src_idx)
+                .map_err(|e| e.to_string())?;
             return Ok(());
         }
         let ta = resolve_tree_spec(store, &trees, f)?;
@@ -295,7 +305,10 @@ pub fn cmd_diff(
         let patch = repo.diff_tree_patch(&trees[i], &trees[i + 1], paths, color)?;
         if !patch.is_empty() {
             any = true;
-            println!("{}", c_bold(&format!("=== [L{}] {} ===", i + 1, name), color));
+            println!(
+                "{}",
+                c_bold(&format!("=== [L{}] {} ===", i + 1, name), color)
+            );
             io::stdout().write_all(&patch).map_err(|e| e.to_string())?;
         }
     }
@@ -303,7 +316,9 @@ pub fn cmd_diff(
     if !wt_patch.is_empty() {
         any = true;
         println!("{}", c_bold("=== [WT] working-tree ===", color));
-        io::stdout().write_all(&wt_patch).map_err(|e| e.to_string())?;
+        io::stdout()
+            .write_all(&wt_patch)
+            .map_err(|e| e.to_string())?;
     }
     if !any {
         println!("(no diffs)");
@@ -350,7 +365,12 @@ pub fn cmd_stage(
         if target + 1 < n && t_before != t_after {
             let delta = repo.diff_tree_patch(&t_before, &t_after, &[], false)?;
             for k in (target + 1)..n {
-                repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), &delta, true, false)?;
+                repo.apply_cached(
+                    &store.idx_path(&store.manifest.layers[k]),
+                    &delta,
+                    true,
+                    false,
+                )?;
             }
         }
     } else {
@@ -391,7 +411,10 @@ pub fn cmd_promote(
         None => {
             let mut found = None;
             for i in 1..n {
-                if !repo.diff_tree_names(&trees[i], &trees[i + 1], paths)?.is_empty() {
+                if !repo
+                    .diff_tree_names(&trees[i], &trees[i + 1], paths)?
+                    .is_empty()
+                {
                     found = Some(i);
                     break;
                 }
@@ -399,7 +422,10 @@ pub fn cmd_promote(
             match found {
                 Some(i) => i,
                 None => {
-                    if !repo.diff_tree_names(&trees[0], &trees[1], paths)?.is_empty() {
+                    if !repo
+                        .diff_tree_names(&trees[0], &trees[1], paths)?
+                        .is_empty()
+                    {
                         return Err(format!(
                             "changes are already in [L1] {} (run `gd commit`)",
                             store.manifest.layers[0]
@@ -443,13 +469,23 @@ pub fn cmd_promote(
         if dst + 1 < src && &t_dst_after != t_dst_before {
             let delta = repo.diff_tree_patch(t_dst_before, &t_dst_after, &[], false)?;
             for k in (dst + 1)..src {
-                repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), &delta, true, false)?;
+                repo.apply_cached(
+                    &store.idx_path(&store.manifest.layers[k]),
+                    &delta,
+                    true,
+                    false,
+                )?;
             }
         }
     } else {
         for k in dst..src {
             let patch = repo.diff_tree_patch(&trees[k + 1], t_src, paths, false)?;
-            repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), &patch, false, false)?;
+            repo.apply_cached(
+                &store.idx_path(&store.manifest.layers[k]),
+                &patch,
+                false,
+                false,
+            )?;
         }
     }
 
@@ -484,7 +520,10 @@ pub fn cmd_demote(
         None => {
             let mut found = None;
             for i in 0..n {
-                if !repo.diff_tree_names(&trees[i], &trees[i + 1], paths)?.is_empty() {
+                if !repo
+                    .diff_tree_names(&trees[i], &trees[i + 1], paths)?
+                    .is_empty()
+                {
                     found = Some(i);
                     break;
                 }
@@ -519,13 +558,23 @@ pub fn cmd_demote(
         if dst > src + 1 && &t_src_after != t_src_before {
             let delta = repo.diff_tree_patch(t_src_before, &t_src_after, &[], false)?;
             for k in (src + 1)..dst {
-                repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), &delta, true, false)?;
+                repo.apply_cached(
+                    &store.idx_path(&store.manifest.layers[k]),
+                    &delta,
+                    true,
+                    false,
+                )?;
             }
         }
     } else {
         for k in src..dst {
             let patch = repo.diff_tree_patch(&trees[k + 1], t_below, paths, false)?;
-            repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), &patch, false, false)?;
+            repo.apply_cached(
+                &store.idx_path(&store.manifest.layers[k]),
+                &patch,
+                false,
+                false,
+            )?;
         }
     }
 
@@ -576,13 +625,23 @@ pub fn cmd_drop(repo: &RepoCtx, store: &LayerStore, opts: DropOpts<'_>) -> Resul
         if end > k + 1 && &t_after != t_before {
             let delta = repo.diff_tree_patch(t_before, &t_after, &[], false)?;
             for i in (k + 1)..end {
-                repo.apply_cached(&store.idx_path(&store.manifest.layers[i]), &delta, true, false)?;
+                repo.apply_cached(
+                    &store.idx_path(&store.manifest.layers[i]),
+                    &delta,
+                    true,
+                    false,
+                )?;
             }
         }
     } else {
         for i in k..end {
             let patch = repo.diff_tree_patch(&trees[i + 1], t_below, opts.paths, false)?;
-            repo.apply_cached(&store.idx_path(&store.manifest.layers[i]), &patch, false, false)?;
+            repo.apply_cached(
+                &store.idx_path(&store.manifest.layers[i]),
+                &patch,
+                false,
+                false,
+            )?;
         }
         if opts.hard {
             let top_idx = store.idx_path(&store.manifest.layers[n - 1]);
@@ -594,7 +653,11 @@ pub fn cmd_drop(repo: &RepoCtx, store: &LayerStore, opts: DropOpts<'_>) -> Resul
     }
 
     store.maybe_mirror_git_index(repo)?;
-    println!("dropped changes from [L{}] {}", k + 1, store.manifest.layers[k]);
+    println!(
+        "dropped changes from [L{}] {}",
+        k + 1,
+        store.manifest.layers[k]
+    );
     Ok(())
 }
 
@@ -743,7 +806,9 @@ pub fn cmd_layer_rm(
         }
         RmMode::MergeDown => {
             if k == 0 {
-                return Err("cannot --merge-down bottom layer; commit or use --merge-up".to_string());
+                return Err(
+                    "cannot --merge-down bottom layer; commit or use --merge-up".to_string()
+                );
             }
             let below = &store.manifest.layers[k - 1];
             repo.read_tree(&store.idx_path(below), &trees[k + 1])?;
@@ -751,7 +816,12 @@ pub fn cmd_layer_rm(
         RmMode::Drop => {
             let patch = repo.diff_tree_patch(&trees[k + 1], &trees[k], &[], false)?;
             for i in (k + 1)..store.manifest.layers.len() {
-                repo.apply_cached(&store.idx_path(&store.manifest.layers[i]), &patch, true, false)?;
+                repo.apply_cached(
+                    &store.idx_path(&store.manifest.layers[i]),
+                    &patch,
+                    true,
+                    false,
+                )?;
             }
         }
     }
@@ -847,7 +917,9 @@ pub fn cmd_patch_apply(
         return Err("patch-apply requires distinct --from and --to".to_string());
     }
     if to_pos < 0 {
-        return Err("cannot apply patches directly to HEAD; target a layer then commit".to_string());
+        return Err(
+            "cannot apply patches directly to HEAD; target a layer then commit".to_string(),
+        );
     }
 
     store.snapshot_for_undo()?;
@@ -856,7 +928,12 @@ pub fn cmd_patch_apply(
         let start = to_pos as usize;
         let end = (from_pos as usize).min(n);
         for k in start..end {
-            repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), patch, true, false)?;
+            repo.apply_cached(
+                &store.idx_path(&store.manifest.layers[k]),
+                patch,
+                true,
+                false,
+            )?;
         }
     } else {
         // Demoting / dropping patch upward from lower layer: reverse-apply on from_pos..(to_pos - 1)
@@ -866,7 +943,12 @@ pub fn cmd_patch_apply(
         let start = from_pos as usize;
         let end = (to_pos as usize).min(n);
         for k in start..end {
-            repo.apply_cached(&store.idx_path(&store.manifest.layers[k]), patch, true, true)?;
+            repo.apply_cached(
+                &store.idx_path(&store.manifest.layers[k]),
+                patch,
+                true,
+                true,
+            )?;
         }
     }
     store.maybe_mirror_git_index(repo)?;

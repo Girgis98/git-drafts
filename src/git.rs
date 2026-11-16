@@ -23,7 +23,10 @@ impl RepoCtx {
         let mut cur: Option<&Path> = Some(&start);
         while let Some(dir) = cur {
             let dot_git = dir.join(".git");
-            if dot_git.is_dir() && dot_git.join("HEAD").is_file() && dot_git.join("objects").is_dir() {
+            if dot_git.is_dir()
+                && dot_git.join("HEAD").is_file()
+                && dot_git.join("objects").is_dir()
+            {
                 return Ok(Self {
                     git_dir: dot_git,
                     work_tree: dir.to_path_buf(),
@@ -40,7 +43,9 @@ impl RepoCtx {
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
-        let out = cmd.output().map_err(|e| format!("failed to run git: {e}"))?;
+        let out = cmd
+            .output()
+            .map_err(|e| format!("failed to run git: {e}"))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
             return Err(if err.is_empty() {
@@ -55,10 +60,7 @@ impl RepoCtx {
             .next()
             .ok_or("missing --absolute-git-dir output")?
             .trim();
-        let work_tree = lines
-            .next()
-            .ok_or("repository has no working tree")?
-            .trim();
+        let work_tree = lines.next().ok_or("repository has no working tree")?.trim();
         Ok(Self {
             git_dir: PathBuf::from(git_dir),
             work_tree: PathBuf::from(work_tree),
@@ -231,7 +233,15 @@ impl RepoCtx {
             return Ok(Vec::new());
         }
         let mut c = self.git_cmd(None);
-        c.args(["diff-tree", "--no-renames", "--name-status", "-r", "-z", tree_a, tree_b]);
+        c.args([
+            "diff-tree",
+            "--no-renames",
+            "--name-status",
+            "-r",
+            "-z",
+            tree_a,
+            tree_b,
+        ]);
         if !paths.is_empty() {
             c.arg("--");
             c.args(paths);
@@ -333,7 +343,13 @@ impl RepoCtx {
     ) -> Result<Vec<u8>, String> {
         self.refresh_index(index_path);
         let mut c = self.git_cmd(Some(index_path));
-        c.args(["diff-files", "--no-renames", "-p", "--binary", "--full-index"]);
+        c.args([
+            "diff-files",
+            "--no-renames",
+            "-p",
+            "--binary",
+            "--full-index",
+        ]);
         if color {
             c.arg("--color=always");
         }
@@ -432,12 +448,7 @@ impl RepoCtx {
         Ok(())
     }
 
-    pub fn add_paths(
-        &self,
-        index_path: &Path,
-        paths: &[String],
-        all: bool,
-    ) -> Result<(), String> {
+    pub fn add_paths(&self, index_path: &Path, paths: &[String], all: bool) -> Result<(), String> {
         let mut c = self.git_cmd(Some(index_path));
         c.arg("add");
         if all {
@@ -493,7 +504,11 @@ impl RepoCtx {
         Ok(())
     }
 
-    pub fn commit_interactive(&self, index_path: &Path, extra_args: &[String]) -> Result<(), String> {
+    pub fn commit_interactive(
+        &self,
+        index_path: &Path,
+        extra_args: &[String],
+    ) -> Result<(), String> {
         let mut c = self.git_cmd(Some(index_path));
         c.arg("commit");
         c.args(extra_args);

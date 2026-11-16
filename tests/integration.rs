@@ -120,7 +120,9 @@ fn test_unborn_init_stage_promote_partial_commit() {
     assert!(st.contains("[L3] draft (3 files)"), "{st}");
 
     // Promote a.txt and b.txt all the way to ready
-    r.gl_ok(&["promote", "--from", "draft", "--to", "ready", "a.txt", "b.txt"]);
+    r.gl_ok(&[
+        "promote", "--from", "draft", "--to", "ready", "a.txt", "b.txt",
+    ]);
     let st = r.gl_ok(&["status"]);
     assert!(st.contains("[L1] ready (commit target) (2 files)"), "{st}");
     assert!(st.contains("[L2] reviewed (0 files)"), "{st}");
@@ -169,7 +171,10 @@ fn test_demote_drop_and_undo() {
     r.gl_ok(&["drop", "ready", "--cascade", "f.txt"]);
     let st = r.gl_ok(&["status"]);
     assert!(st.contains("[L1] ready (commit target) (0 files)"), "{st}");
-    assert!(st.contains("[WT] working-tree (1 modified, 0 untracked)"), "{st}");
+    assert!(
+        st.contains("[WT] working-tree (1 modified, 0 untracked)"),
+        "{st}"
+    );
     assert_eq!(r.read("f.txt"), "v2\n");
 
     // Stage + drop --hard reverts WT + cleans untracked
@@ -219,9 +224,7 @@ fn test_dynamic_layers_and_head_drift() {
 #[test]
 fn test_interactive_patch_promote_and_commit() {
     let r = TempRepo::new();
-    let initial = (1..=20)
-        .map(|i| format!("line {i}\n"))
-        .collect::<String>();
+    let initial = (1..=20).map(|i| format!("line {i}\n")).collect::<String>();
     r.write("multi.txt", &initial);
     r.git(&["add", "multi.txt"]);
     r.git(&["commit", "-m", "init"]);
@@ -243,7 +246,18 @@ fn test_interactive_patch_promote_and_commit() {
     r.gl_ok(&["stage", "multi.txt"]);
 
     // Promote only first hunk from draft -> ready (`y\nn\n`)
-    r.gl_stdin_ok(&["promote", "--from", "draft", "--to", "ready", "-p", "multi.txt"], "y\nn\n");
+    r.gl_stdin_ok(
+        &[
+            "promote",
+            "--from",
+            "draft",
+            "--to",
+            "ready",
+            "-p",
+            "multi.txt",
+        ],
+        "y\nn\n",
+    );
 
     let diff_ready = r.gl_ok(&["diff", "ready"]);
     let diff_reviewed = r.gl_ok(&["diff", "reviewed"]);
@@ -251,7 +265,10 @@ fn test_interactive_patch_promote_and_commit() {
     assert!(diff_ready.contains("CHANGED A"), "{diff_ready}");
     assert!(!diff_ready.contains("CHANGED B"), "{diff_ready}");
     // Monotonic invariant: ready & reviewed both have A; draft has A+B => delta in reviewed is empty, delta in draft is B!
-    assert!(diff_reviewed.is_empty(), "expected empty reviewed delta, got: {diff_reviewed}");
+    assert!(
+        diff_reviewed.is_empty(),
+        "expected empty reviewed delta, got: {diff_reviewed}"
+    );
     assert!(diff_draft.contains("CHANGED B"), "{diff_draft}");
     assert!(!diff_draft.contains("CHANGED A"), "{diff_draft}");
 
@@ -282,21 +299,35 @@ fn test_ide_json_blob_patch_apply_and_sync_git_index() {
 
     // Blob checks
     assert_eq!(r.gl_ok(&["blob", "head", "app.txt"]), "one\ntwo\n");
-    assert_eq!(r.gl_ok(&["blob", "draft", "app.txt"]), "one\ntwo modified\n");
-    assert_eq!(r.gl_ok(&["blob", "head", "missing.txt", "--allow-missing"]), "");
+    assert_eq!(
+        r.gl_ok(&["blob", "draft", "app.txt"]),
+        "one\ntwo modified\n"
+    );
+    assert_eq!(
+        r.gl_ok(&["blob", "head", "missing.txt", "--allow-missing"]),
+        ""
+    );
 
     // Non-interactive patch-apply from draft -> ready
     let patch = r.gl_ok(&["diff", "draft"]);
     r.gl_stdin_ok(&["patch-apply", "--from", "draft", "--to", "ready"], &patch);
 
     // Native git index should mirror L1 (ready)!
-    let native_staged = String::from_utf8_lossy(&r.git(&["diff", "--cached", "--name-only"]).stdout).to_string();
+    let native_staged =
+        String::from_utf8_lossy(&r.git(&["diff", "--cached", "--name-only"]).stdout).to_string();
     assert_eq!(native_staged.trim(), "app.txt");
 
     // Non-interactive patch-apply demote ready -> reviewed
-    r.gl_stdin_ok(&["patch-apply", "--from", "ready", "--to", "reviewed"], &patch);
-    let native_staged_after = String::from_utf8_lossy(&r.git(&["diff", "--cached", "--name-only"]).stdout).to_string();
-    assert!(native_staged_after.trim().is_empty(), "{native_staged_after}");
+    r.gl_stdin_ok(
+        &["patch-apply", "--from", "ready", "--to", "reviewed"],
+        &patch,
+    );
+    let native_staged_after =
+        String::from_utf8_lossy(&r.git(&["diff", "--cached", "--name-only"]).stdout).to_string();
+    assert!(
+        native_staged_after.trim().is_empty(),
+        "{native_staged_after}"
+    );
 
     // Toggle config off
     r.gl_ok(&["config", "sync-git-index", "false"]);
@@ -308,13 +339,22 @@ fn test_ide_json_blob_patch_apply_and_sync_git_index() {
     r.write("ext.txt", "from default git\n");
     r.git(&["add", "ext.txt"]);
     let st_after_git_add = r.gl_ok(&["status"]);
-    assert!(st_after_git_add.contains("[L1] ready (commit target) (1 files)"), "{st_after_git_add}");
+    assert!(
+        st_after_git_add.contains("[L1] ready (commit target) (1 files)"),
+        "{st_after_git_add}"
+    );
     assert!(st_after_git_add.contains("ext.txt"), "{st_after_git_add}");
 
     // External `git reset HEAD ext.txt` unstages from ready; app.txt + ext.txt stay in reviewed
     r.git(&["reset", "HEAD", "--", "ext.txt"]);
     let st_after_reset = r.gl_ok(&["status"]);
-    assert!(st_after_reset.contains("[L1] ready (commit target) (0 files)"), "{st_after_reset}");
-    assert!(st_after_reset.contains("[L2] reviewed (2 files)"), "{st_after_reset}");
+    assert!(
+        st_after_reset.contains("[L1] ready (commit target) (0 files)"),
+        "{st_after_reset}"
+    );
+    assert!(
+        st_after_reset.contains("[L2] reviewed (2 files)"),
+        "{st_after_reset}"
+    );
     assert!(st_after_reset.contains("ext.txt"), "{st_after_reset}");
 }

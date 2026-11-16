@@ -125,8 +125,8 @@ pub fn run() -> Result<(), String> {
             let mut paths = Vec::new();
             if from.is_none() && to.is_none() && !pos.is_empty() {
                 let first = pos[0].clone();
-                let looks_like_layer = first.eq_ignore_ascii_case("wt")
-                    || store.resolve_layer(&first).is_ok();
+                let looks_like_layer =
+                    first.eq_ignore_ascii_case("wt") || store.resolve_layer(&first).is_ok();
                 if looks_like_layer && !repo.work_tree.join(&first).exists() {
                     layer = Some(first);
                     paths.extend(pos.into_iter().skip(1));
@@ -325,7 +325,9 @@ pub fn run() -> Result<(), String> {
                     | "-t" | "--template" | "--cleanup" | "--trailer" => {
                         git_args.push(a.clone());
                         i += 1;
-                        let val = flags.get(i).ok_or_else(|| format!("{a} requires a value"))?;
+                        let val = flags
+                            .get(i)
+                            .ok_or_else(|| format!("{a} requires a value"))?;
                         git_args.push(val.clone());
                     }
                     s if s.starts_with('-') => git_args.push(a.clone()),

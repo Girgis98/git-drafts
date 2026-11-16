@@ -353,8 +353,7 @@ impl LayerStore {
         for l in &self.manifest.layers {
             let src = self.idx_path(l);
             if src.exists() {
-                fs::copy(&src, snap_idx.join(l))
-                    .map_err(|e| format!("copy idx snap {l}: {e}"))?;
+                fs::copy(&src, snap_idx.join(l)).map_err(|e| format!("copy idx snap {l}: {e}"))?;
             }
         }
 
@@ -395,8 +394,7 @@ impl LayerStore {
         for l in &snap_parsed.layers {
             let src = snap.join("idx").join(l);
             if src.exists() {
-                fs::copy(&src, cur_idx.join(l))
-                    .map_err(|e| format!("restore idx {l}: {e}"))?;
+                fs::copy(&src, cur_idx.join(l)).map_err(|e| format!("restore idx {l}: {e}"))?;
             }
         }
         self.manifest = snap_parsed;
